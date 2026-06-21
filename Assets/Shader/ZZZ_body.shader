@@ -18,9 +18,10 @@ Shader "ZZZ/ZZZ_body"
         [Header(Ramp)]
         [Toggle(_USE_RAMPMAP)] _UseRampMap("Use RampMap" , Range(0,1)) = 1
         _RampMap("Ramp Map" ,2D) = "black"{}
-        _RampOffset("Ramp Offset" ,Range(-1,1)) = 0 //阴影区域偏移
-        _RampWidth("Ramp Width" , Range(0,1)) = 0.55 //阴影边界宽度
-        _RampSoftness("Ramp Softness" ,Range(0.001,1)) = 0.1 //阴影边界柔和度
+        _RampID("RampID" , 2D) = "white"{}
+        _ShadowOffset("Shadow Offset" ,Range(-1,1)) = 0 //阴影区域偏移
+        _ShadowSoftness("Shadow Softness" ,Range(0.001,1)) = 0.001 //阴影边界柔和度
+        _ShadowIntensity("Shadow Intensity" , Range(0,1)) = 1
 
         [Header(Colour Modulation)]
         _ColourModulation("Colour Modulation" ,Color) = (1,1,1,1)//调色
@@ -47,6 +48,7 @@ Shader "ZZZ/ZZZ_body"
             TEXTURE2D(_AOMap);          SAMPLER(sampler_AOMap);
             TEXTURE2D(_SpecularMap);    SAMPLER(sampler_SpecularMap);
             TEXTURE2D(_RampMap);        SAMPLER(sampler_RampMap);
+            TEXTURE2D(_RampID);         SAMPLER(sampler_RampID);
 
             // 材质属性常量缓冲区
             CBUFFER_START(UnityPerMaterial)
@@ -63,9 +65,9 @@ Shader "ZZZ/ZZZ_body"
                 half _SpecularRegion;
                 
                 // Ramp色阶阴影
-                half _RampOffset;
-                half _RampWidth;
-                half _RampSoftness;
+                half _ShadowOffset;
+                half _ShadowSoftness;
+                half _ShadowIntensity;
                 
                 // 调色
                 float4 _ColourModulation;
@@ -83,7 +85,7 @@ Shader "ZZZ/ZZZ_body"
                 "LightMode" = "UniversalForward"
             }
 
-            Cull off //背面剔除
+            Cull off //背面剔除关闭
 
             HLSLPROGRAM
 
@@ -96,6 +98,7 @@ Shader "ZZZ/ZZZ_body"
                     float2 uv0        : TEXCOORD0;  // UV
                     float2 uv1        : TEXCOORD1;  // 高光
                     float3 normalOS   : NORMAL;     // 模型空间法线
+                    float4 color      : COLOR0;     // 顶点颜色
                 };
 
                 struct Varyings
@@ -104,6 +107,7 @@ Shader "ZZZ/ZZZ_body"
                     float2 uv0        : TEXCOORD0;   // 主纹理 UV
                     float2 uv1        : TEXCOORD1;   // 高光贴图 UV
                     float3 normalWS   : TEXCOORD2;   // 世界空间法线
+                    float4 color      : COLOR0;      // 顶点颜色
                 };
 
                 Varyings vert(Attributes i)
@@ -120,6 +124,9 @@ Shader "ZZZ/ZZZ_body"
                     // normal
                     VertexNormalInputs normalInput = GetVertexNormalInputs(i.normalOS);//转换法线空间
                     o.normalWS = normalInput.normalWS;//将世界坐标法线传递给输出变量
+
+                    //color
+                    o.color = i.color;
                     
                     return o;
                 }
@@ -136,39 +143,43 @@ Shader "ZZZ/ZZZ_body"
                     half3 L = normalize(light.direction);
                     half NdotL = saturate(dot(N, L));
                     half halfLambert = saturate(NdotL * 0.5 + 0.5); //半lambert 
-                    halfLambert = halfLambert * halfLambert * halfLambert; //增加效果
-                    halfLambert = lerp(halfLambert,0,step(halfLambert,0.05));
-                    halfLambert = lerp(halfLambert,1,step(0.95,halfLambert));
+                    halfLambert = halfLambert * halfLambert;// * halfLambert; //增加效果
 
                     // AO 强度调节：1 = 无AO效果，ao值越小遮蔽越强
                     half ao = SAMPLE_TEXTURE2D(_AOMap,sampler_AOMap,i.uv0);
                     ao = lerp(1.0, ao, _AOIntensity);
-                    ao = (ao+halfLambert)*0.5;
+                    #if _USE_AO_MAP
+                        half ambient = halfLambert * ao;
+                    #else
+                        half ambient = halfLambert;
+                    #endif
+                    half shadow = (ambient+halfLambert)*0.5;
+                    shadow = lerp(shadow,0,step(shadow,0.05));
+                    shadow = lerp(shadow,1,step(0.95,shadow));
 
                     // Ramp色阶阴影
-                    half center = _RampOffset + 0.5;
-                    half shadowMask = smoothstep((center + _RampWidth) , (center - _RampWidth) , NdotL); 
-                    shadowMask = smoothstep((0.5+_RampSoftness),(0.5-_RampSoftness),shadowMask);
-                    half2 rampUV = half2(shadowMask,0.5);
+                    half rampU = saturate(pow(halfLambert, _ShadowSoftness) + _ShadowOffset);
+                    half2 rampUV = half2(rampU,0.5);
                     half3 rampColor = SAMPLE_TEXTURE2D(_RampMap,sampler_RampMap,rampUV).rgb;
+                    rampColor *= _ShadowIntensity;
+
+                    // Rim边缘光
+
 
                     // 最终颜色
-                    half3 duffuse = basecolor.rgb * light.color * halfLambert;
+                    half3 duffuse = basecolor.rgb * light.color * shadow;
                     half3 color = duffuse;
-
-                    // 高光（大于0.3使用）
-                    if(halfLambert>1-_SpecularRegion)
-                    {
-                        color.rgb += specularMap.rgb * _SpecularPower * halfLambert;
-                    }
 
                     #if _USE_RAMPMAP
                         color *= rampColor;
                     #endif
 
-                    #if _USE_AO_MAP
-                        color *= (ao+0.2);
-                    #endif
+                    // 高光（大于0.3使用）
+                    if(halfLambert>1-_SpecularRegion)
+                    {
+                         specularMap.a *= _SpecularPower;
+                        color.rgb += specularMap.a;
+                    }
 
                     return half4(color,basecolor.a);
                 }

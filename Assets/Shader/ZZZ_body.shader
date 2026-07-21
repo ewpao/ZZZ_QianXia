@@ -24,9 +24,11 @@ Shader "ZZZ/ZZZ_body"
         _ShadowIntensity("Shadow Intensity" , Range(0,1)) = 1 //阴影强度
 
         [Header(Rim)]
-        [Toggle(_USE_RIM_LIGHT)] _UseRimLight("Use Rim Light" , Range(0,1)) = 1 //Rim边缘光开关
-        _OffsetMul("Rim Width" ,Range(0.01,0.1)) = 0.01 // 偏移量乘积代表边缘光宽度
-        _RimThreshold("Rim Threshold" ,Range(0,1)) = 0.9 // 差值的阈值
+        _RimIntensity("Rim Intensity" ,Range(0,1)) = 1
+        _RimColor ("Rim Color", Color) = (1, 1, 1, 1)
+        _RimWidth ("Rim Width (View Space)", Range(0.001, 0.1)) = 0.01
+        _DepthThreshold ("Depth Threshold", Range(0.0001, 0.1)) = 0.01
+        _FresnelMask ("Fresnel Mask", Range(0.0, 1.0)) = 0.5
 
 
         [Header(Colour Modulation)]
@@ -45,9 +47,10 @@ Shader "ZZZ/ZZZ_body"
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl" // 核心库
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl" // 光照库
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl" // 深度纹理（声明 _CameraDepthTexture）
 
             #pragma shader_feature_local _USE_RAMPMAP
-            #pragma shader_feature_local _USE_AO_MAP
+            #pragma shader_feature_local _USE_RIM_LIGHT
 
             // 纹理声明
             TEXTURE2D(_BaseMap);        SAMPLER(sampler_BaseMap);
@@ -76,9 +79,11 @@ Shader "ZZZ/ZZZ_body"
                 half _ShadowIntensity;
 
                 // Rim边缘光
-                half _UseRimLight;
-                half _OffsetMul;
-                half _RimThreshold;
+                half _RimIntensity;
+                half4 _RimColor;
+                float _RimWidth;
+                float _DepthThreshold;
+                float _FresnelMask;
 
                 // 调色
                 float4 _ColourModulation;
@@ -100,22 +105,32 @@ Shader "ZZZ/ZZZ_body"
                 return v;
             }
 
+            float4 TransformHClipToViewPortPos(float4 positionCS)
+            {
+                float4 o = positionCS * 0.5f;
+                o.xy = float2(o.x, o.y * _ProjectionParams.x) + o.w;
+                o.zw = positionCS.zw;
+                return o / o.w;
+            }
+
             struct Attributes
             {
                 float4 positionOS : POSITION;   // 模型空间坐标
-                float2 uv0        : TEXCOORD0;  // UV
-                float2 uv1        : TEXCOORD1;  // 高光
+                float2 uv0        : TEXCOORD0;  // 主纹理 UV
+                float2 uv1        : TEXCOORD1;  // 高光贴图 UV
                 float3 normalOS   : NORMAL;     // 模型空间法线
-                float4 color      : COLOR0;     // 顶点颜色
             };
 
             struct Varyings
             {
-                float4 positionCS : SV_POSITION; // 裁剪空间坐标
-                float2 uv0        : TEXCOORD0;   // 主纹理 UV
-                float2 uv1        : TEXCOORD1;   // 高光贴图 UV
-                float3 normalWS   : TEXCOORD2;   // 世界空间法线
-                float4 color      : COLOR0;      // 顶点颜色
+                float4 positionCS   : SV_POSITION; // 裁剪空间坐标
+                float2 uv0          : TEXCOORD0;   // 主纹理 UV
+                float2 uv1          : TEXCOORD1;   // 高光贴图 UV
+                float3 normalWS     : TEXCOORD2;   // 世界空间法线
+                float3 normalVS     : TEXCOORD3;   // 观察空间法线
+                float3 positionVS   : TEXCOORD4;   // 观察空间坐标
+                float4 positionNDC  : TEXCOORD5;   // NDC空间坐标
+                float3 positionWS   : TEXCOORD6;   // 世界空间坐标
             };
 
         ENDHLSL
@@ -140,20 +155,22 @@ Shader "ZZZ/ZZZ_body"
                 {
                     Varyings o;
 
-                    // 空间转换
-                    o.positionCS = TransformObjectToHClip(i.positionOS.xyz);//模型空间->裁剪空间
+                    VertexPositionInputs posInputs = GetVertexPositionInputs(i.positionOS.xyz);
+                    VertexNormalInputs normalInput = GetVertexNormalInputs(i.normalOS);//转换法线空间
 
+                    // 空间转换
+                    o.positionCS = posInputs.positionCS;
+                    o.positionVS = posInputs.positionVS;
+                    o.positionNDC = posInputs.positionNDC;
+                    o.positionWS = posInputs.positionWS;
 
                     // UV 传递（应用 Tiling/Offset）
                     o.uv0 = TRANSFORM_TEX(i.uv0, _BaseMap);
                     o.uv1 = TRANSFORM_TEX(i.uv1, _SpecularMap);
 
                     // normal
-                    VertexNormalInputs normalInput = GetVertexNormalInputs(i.normalOS);//转换法线空间
                     o.normalWS = normalInput.normalWS;//将世界坐标法线传递给输出变量
-
-                    //color
-                    o.color = i.color;
+                    o.normalVS = TransformWorldToViewDir(normalInput.normalWS, true);
                     
                     return o;
                 }
@@ -162,7 +179,6 @@ Shader "ZZZ/ZZZ_body"
                 {
                     // 采样光源
                     Light light = GetMainLight();
-                    half4 vertexcolor = i.color;
 
                     // Lambert Diffuse
                     half4 basecolor    = SAMPLE_TEXTURE2D(_BaseMap,    sampler_BaseMap,    i.uv0);
@@ -190,12 +206,52 @@ Shader "ZZZ/ZZZ_body"
                     half3 RampID = SAMPLE_TEXTURE2D(_RampID,sampler_RampID,i.uv0);
                     half2 rampUV = half2(rampU,GetrampV(RampID));
                     half3 rampColor = SAMPLE_TEXTURE2D(_RampMap,sampler_RampMap,rampUV).rgb;
+
+                    // Rim边缘光
+                    float3 positionVS = i.positionVS;
+                    float3 normalVS = normalize(i.normalVS);
+
+                    // 2. 仅在 XY 平面偏移，保持 Z 不变
+                    float3 samplePositionVS = float3(positionVS.xy + normalVS.xy * _RimWidth, positionVS.z);
+
+                    // 3. 转到裁剪空间 (注意这里用 P 矩阵乘以 VS 坐标)
+                    float4 samplePositionCS = mul(UNITY_MATRIX_P, float4(samplePositionVS, 1.0));
+                    
+                    // 4. 转为视口坐标 (0~1 UV)
+                    float4 samplePositionVP = TransformHClipToViewPortPos(samplePositionCS);
+
+                    // 5. 采样偏移后的深度 (兼容VR写法)
+                    float offsetDepth = SAMPLE_TEXTURE2D_X(_CameraDepthTexture, sampler_CameraDepthTexture, samplePositionVP.xy).r;
+                    float linearEyeOffsetDepth = LinearEyeDepth(offsetDepth, _ZBufferParams);
+
+                    // 6. 获取自身深度（SV_POSITION 在 fragment 中已是设备深度 0~1，直接用，不除 w）
+                    float selfRawDepth = i.positionCS.z;
+                    float linearEyeDepth = LinearEyeDepth(selfRawDepth, _ZBufferParams);
+
+                    // 7. 屏幕空间深度差值计算
+                    float depthDiff = linearEyeOffsetDepth - linearEyeDepth;
+                    float rimIntensity = step(_DepthThreshold, depthDiff);
+
+                    // 8. 菲涅尔遮罩：剔除内部杂乱的边缘光
+                    float3 viewDirectionWS = SafeNormalize(GetCameraPositionWS() - i.positionWS);
+                    float rimRatio = 1.0 - saturate(dot(viewDirectionWS, i.normalWS));
+                    // 调整菲涅尔柔和度
+                    rimRatio = pow(rimRatio, exp2(lerp(4.0, 0.0, _FresnelMask)));
+                    // 应用遮罩
+                    rimIntensity = lerp(0.0, rimIntensity, rimRatio);
+
                     
                     // 最终颜色
                     half3 duffuse = basecolor.rgb * light.color * shadow;
                     half3 color = duffuse;
+                    
+                    // 叠加边缘光
+                    color.rgb += _RimColor.rgb * rimIntensity * _RimIntensity;
 
-                    color = lerp(color,lerp(color , color*rampColor , _ShadowIntensity) ,_USE_RAMPMAP);
+                    #if defined(_USE_RAMPMAP)
+                        // Ramp色阶阴影：用 ramp 贴图对颜色做阴影调色
+                        color = lerp(color, color * rampColor, _ShadowIntensity);
+                    #endif
 
                     // 高光（大于0.3使用）
                     if(halfLambert > 1- _SpecularRegion)
@@ -204,80 +260,6 @@ Shader "ZZZ/ZZZ_body"
                     }
 
                     return half4(color.rgb,basecolor.a);
-                }
-
-            ENDHLSL
-        }
-
-        pass
-        {
-            Name "Rim processing"
-
-            Tags
-            {
-                "LightMode" = "SRPDefaultUnlit"
-            }
-
-            Blend One One           // 加法混合：边缘光叠加到主颜色上
-            ZWrite Off
-            ZTest Always            // 由手动深度比较决定是否为边缘，关闭硬件深度剔除
-            Cull Back
-
-            HLSLPROGRAM
-
-                #pragma vertex vert1
-                #pragma fragment frag1
-
-                #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
-
-                struct RimVaryings
-                {
-                    float4 positionCS : SV_POSITION; // 偏移后顶点的裁剪空间坐标（片元阶段.xy为像素坐标，.z为设备深度）
-                    float3 normalWS   : TEXCOORD0;   // 世界空间法线
-                };
-
-                RimVaryings vert1(Attributes i)
-                {
-                    RimVaryings o;
-
-                    // 沿法线方向偏移顶点，偏移量即边缘光宽度
-                    float3 offsetOS = i.positionOS.xyz + i.normalOS * _OffsetMul;
-                    o.positionCS = TransformObjectToHClip(offsetOS);
-
-                    // 法线转换到世界空间
-                    VertexNormalInputs normalInput = GetVertexNormalInputs(i.normalOS);
-                    o.normalWS = normalInput.normalWS;
-
-                    return o;
-                }
-
-                half4 frag1(RimVaryings i) : SV_TARGET
-                {
-                    // 未开启边缘光则直接丢弃
-                    if (_UseRimLight < 0.5) discard;
-
-                    // 偏移顶点的屏幕UV与设备深度
-                    float2 screenUV   = i.positionCS.xy / _ScreenParams.xy;
-                    half   offsetDepth = i.positionCS.z;
-                    half   sceneDepth  = SampleSceneDepth(screenUV);
-
-                    // 反转Z下：深度值越大越靠近相机。偏移顶点比场景更近（差值为正）说明该像素落在真实轮廓之外 → 边缘
-                    #if UNITY_REVERSED_Z
-                        half depthDiff = saturate(offsetDepth - sceneDepth);
-                    #else
-                        half depthDiff = saturate(sceneDepth - offsetDepth);
-                    #endif
-
-                    // 仅受光面显示边缘光
-                    Light light = GetMainLight();
-                    half3 N = normalize(i.normalWS);
-                    half3 L = normalize(light.direction);
-                    half  NdotL = saturate(dot(N, L));
-
-                    // 阈值过滤：只有深度差足够大（即真正超出真实轮廓）的地方才出边缘光
-                    half rim = smoothstep(_RimThreshold, min(_RimThreshold + 0.05, 1.0), depthDiff) * NdotL;
-
-                    return half4(light.color * rim, rim);
                 }
 
             ENDHLSL

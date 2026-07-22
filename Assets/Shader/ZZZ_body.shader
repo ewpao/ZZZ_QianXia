@@ -34,6 +34,10 @@ Shader "ZZZ/ZZZ_body"
         [Header(Colour Modulation)]
         _ColourModulation("Colour Modulation" ,Color) = (1,1,1,1)//调色
         _Saturation("Saturation", Range(0,2)) = 1.0//饱和度调节
+
+        [Header(Outline)]
+        _OutlineWidth("Outline Width", Range(0, 10)) = 2.0 //描边宽度（像素级）
+        _OutlineColor("Outline Color", Color) = (0, 0, 0, 1) //描边颜色
     }
     SubShader
     {
@@ -88,6 +92,10 @@ Shader "ZZZ/ZZZ_body"
                 // 调色
                 float4 _ColourModulation;
                 half _Saturation;
+
+                // 描边
+                half _OutlineWidth;
+                half4 _OutlineColor;
             CBUFFER_END
 
             half GetrampV(half3 rampIDtu)
@@ -119,6 +127,7 @@ Shader "ZZZ/ZZZ_body"
                 float2 uv0        : TEXCOORD0;  // 主纹理 UV
                 float2 uv1        : TEXCOORD1;  // 高光贴图 UV
                 float3 normalOS   : NORMAL;     // 模型空间法线
+                float4 color      : COLOR;      // 顶点颜色
             };
 
             struct Varyings
@@ -131,6 +140,7 @@ Shader "ZZZ/ZZZ_body"
                 float3 positionVS   : TEXCOORD4;   // 观察空间坐标
                 float4 positionNDC  : TEXCOORD5;   // NDC空间坐标
                 float3 positionWS   : TEXCOORD6;   // 世界空间坐标
+                float4 color        : COLOR;       // 顶点颜色
             };
 
         ENDHLSL
@@ -144,7 +154,7 @@ Shader "ZZZ/ZZZ_body"
                 "LightMode" = "UniversalForward"
             }
 
-            Cull back //背面剔除关闭
+            Cull off //背面剔除关闭
 
             HLSLPROGRAM
 
@@ -155,6 +165,7 @@ Shader "ZZZ/ZZZ_body"
                 {
                     Varyings o;
 
+                    // 空间转换函数
                     VertexPositionInputs posInputs = GetVertexPositionInputs(i.positionOS.xyz);
                     VertexNormalInputs normalInput = GetVertexNormalInputs(i.normalOS);//转换法线空间
 
@@ -171,6 +182,9 @@ Shader "ZZZ/ZZZ_body"
                     // normal
                     o.normalWS = normalInput.normalWS;//将世界坐标法线传递给输出变量
                     o.normalVS = TransformWorldToViewDir(normalInput.normalWS, true);
+
+                    // 顶点颜色
+                    o.color = i.color;
                     
                     return o;
                 }
@@ -179,6 +193,9 @@ Shader "ZZZ/ZZZ_body"
                 {
                     // 采样光源
                     Light light = GetMainLight();
+
+                    // 采样顶点色
+                    half3 vertexcolor = i.color.rgb;
 
                     // Lambert Diffuse
                     half4 basecolor    = SAMPLE_TEXTURE2D(_BaseMap,    sampler_BaseMap,    i.uv0);
@@ -259,7 +276,63 @@ Shader "ZZZ/ZZZ_body"
                         color.rgb = lerp(color.rgb,lerp(color.rgb , color.rgb+specularMap.a , halfLambert),_SpecularPower);
                     }
 
-                    return half4(color.rgb,basecolor.a);
+                    return half4(1,1,1,basecolor.a);
+                    //return half4(vertexcolor.ggg, 1.0); // 调试：直出顶点色
+                }
+
+            ENDHLSL
+        }
+
+        pass
+        {
+            Name "Outline"
+
+            Tags
+            {
+                "LightMode" = "SRPDefaultUnlit" // URP 默认会绘制，保证主相机下描边可见
+            }
+
+            Cull Front  // 剔除正面，只渲染膨胀后的背面，形成轮廓
+            ZWrite On
+            ZTest LEqual
+
+            HLSLPROGRAM
+
+                #pragma vertex vertOutline
+                #pragma fragment fragOutline
+
+                struct OutlineVaryings
+                {
+                    float4 positionCS : SV_POSITION;
+                };
+
+                OutlineVaryings vertOutline(Attributes v)
+                {
+                    OutlineVaryings o;
+
+                    VertexPositionInputs posInputs = GetVertexPositionInputs(v.positionOS.xyz);
+                    o.positionCS = posInputs.positionCS;
+
+                    // 1. 观察空间法线（用于决定膨胀方向）
+                    //    用 GetVertexNormalInputs + TransformWorldToViewDir，与 forward Pass 一致，
+                    //    内部走逆转置(UNITY_MATRIX_I_M)，非均匀缩放下法线方向也正确
+                    VertexNormalInputs normalInput = GetVertexNormalInputs(v.normalOS); // 转换法线空间
+                    float3 normalVS = TransformWorldToViewDir(normalInput.normalWS, true);
+
+                    // 2. 裁剪空间下沿法线方向膨胀：
+                    //    - normalize 后乘 _OutlineWidth 得到像素级偏移量
+                    //    - 除以 _ScreenParams.xy*0.5 把像素偏移转为 NDC 偏移，修正屏幕宽高比
+                    //    - 乘 positionCS.w 从 NDC 还原到裁剪空间，保证透视下描边粗细一致
+                    float2 extent = normalize(normalVS.xy) * _OutlineWidth;
+                    extent /= _ScreenParams.xy * 0.5;
+                    o.positionCS.xy += extent * o.positionCS.w;
+
+                    return o;
+                }
+
+                half4 fragOutline(OutlineVaryings i) : SV_TARGET
+                {
+                    return half4(_OutlineColor.rgb, 1.0);
                 }
 
             ENDHLSL

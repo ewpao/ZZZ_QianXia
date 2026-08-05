@@ -12,9 +12,11 @@ Shader "ZZZ/ZZZ_face"
         _OutlineZOffset("Outline Z Offset", Range(-1, 1)) = 0.0 //描边深度偏移：正值沉后(URP Reverse-Z)，负值前移
 
         [Header(Outline Noise)]
-        _NoiseTillOffset("Noise Tiling(XY) Offset(ZW)", Vector) = (10, 10, 0, 0) //噪声平铺(xy)/偏移(zw)，对齐 Unity Tiling/Offset 用法
+        [Toggle(_USE_OUTLINE_NOISE)] _UseOutlineNoise("Use Outline Noise", Range(0,1)) = 1 //描边噪声总开关（关闭后宽度均匀，且剔除噪声计算）
+        _NoiseTillOffset("Noise Tiling(XY) Offset(ZW)", Vector) = (10, 10, 0, 0) //噪声平铺(xy,物体空间/米)/偏移(zw)
         _OutlineNoiseStrength("Outline Noise Strength", Range(0, 1)) = 0.3 //噪声对粗细的影响强度（0=均匀，1=±100%）
-        _OutlineNoiseAnimSpeed("Outline Noise Anim Speed", Range(0, 5)) = 0 //噪声流动速度（0=静态，沿对角线滚动 UV）
+        _OutlineNoiseAnimSpeed("Outline Noise Anim Speed", Range(0, 5)) = 0 //噪声流动速度（0=静态，沿对角线滚动采样坐标）
+        _NoiseContrast("Noise Contrast", Range(0.5, 4)) = 1.0 //噪声对比度（>1 拉开黑白差距，<1 变柔和）
 
         [Header(Debug)]
         _DebugNoise("Debug Noise", Range(0,1)) = 0 //临时查看柏林噪声贴图（1=显示噪声，0=正常渲染）
@@ -31,9 +33,12 @@ Shader "ZZZ/ZZZ_face"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl" // 核心库
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl" // 光照库
 
+            #pragma shader_feature_local _USE_OUTLINE_NOISE
+
             // 材质属性常量缓冲区（所有 Pass 共用，保证 SRP Batcher 兼容）
             CBUFFER_START(UnityPerMaterial)
                 float4 _BaseMap_ST;
+
                 half _OutlineWidth;
                 half4 _OutlineColor;
                 float _OutlineMaxDistance;
@@ -43,6 +48,7 @@ Shader "ZZZ/ZZZ_face"
                 float4 _NoiseTillOffset;
                 half _OutlineNoiseStrength;
                 half _OutlineNoiseAnimSpeed;
+                half _NoiseContrast;
 
                 // 调试
                 half _DebugNoise;
@@ -69,6 +75,12 @@ Shader "ZZZ/ZZZ_face"
                 float n11 = dot(hash22(pi + float2(1.0, 1.0)), pf - float2(1.0, 1.0));
 
                 return lerp(lerp(n00, n10, u.x), lerp(n01, n11, u.x), u.y);
+            }
+
+            // 噪声对比度：sign(n)*|n|^(1/c)，c>1 拉开黑白、c<1 变柔和，零点结构不变
+            float applyNoiseContrast(float n, float c)
+            {
+                return sign(n) * pow(abs(n), 1.0 / c);
             }
 
         ENDHLSL
@@ -103,6 +115,7 @@ Shader "ZZZ/ZZZ_face"
                 {
                     float4 positionCS : SV_POSITION; // 裁剪空间坐标
                     float2 uv0        : TEXCOORD0;   // 主纹理 UV
+                    float3 positionOS : TEXCOORD1;   // 模型空间坐标（噪声调试预览用，与描边 Pass 同源）
                     float3 normalWS   : TEXCOORD2;   // 世界空间法线
                     float4 color      : COLOR;       // 顶点颜色
                 };
@@ -116,6 +129,7 @@ Shader "ZZZ/ZZZ_face"
 
                     // UV 传递（应用 Tiling/Offset）
                     o.uv0 = TRANSFORM_TEX(i.uv0, _BaseMap);
+                    o.positionOS = i.positionOS.xyz;
                     // 法线：模型空间 -> 世界空间
                     o.normalWS = TransformObjectToWorldNormal(i.normalOS);
 
@@ -133,7 +147,6 @@ Shader "ZZZ/ZZZ_face"
                     // 采样纹理
                     half4 basecolor = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, i.uv0);
 
-                    // 归一化向量
                     half3 N = normalize(i.normalWS);
                     half3 L = normalize(light.direction);
 
@@ -149,11 +162,11 @@ Shader "ZZZ/ZZZ_face"
                     half3 vertexcolor = i.color.rgb;
 
                     // 临时调试：直出 Perlin 噪声贴图（_DebugNoise=1 时生效）
-                    // 注意此处用经过 BaseMap Tiling/Offset 的 i.uv0；若 BaseMap 平铺≠1，图案与描边噪声会有差异
+                    // 与描边 Pass 同一采样坐标（模型空间 XY 投影），预览即所得
                     if (_DebugNoise > 0.5)
                     {
-                        float2 nuv = i.uv0 * _NoiseTillOffset.xy + _NoiseTillOffset.zw + _Time.y * _OutlineNoiseAnimSpeed;
-                        float n = perlinNoise2D(nuv) * 0.5 + 0.5;
+                        float2 nuv = i.positionOS.xy * _NoiseTillOffset.xy + _NoiseTillOffset.zw + _Time.y * _OutlineNoiseAnimSpeed;
+                        float n = applyNoiseContrast(perlinNoise2D(nuv), _NoiseContrast) * 0.5 + 0.5;
                         return half4(n, n, n, 1);
                     }
 
@@ -186,7 +199,7 @@ Shader "ZZZ/ZZZ_face"
                 {
                     float4 positionOS : POSITION;   // 模型空间坐标
                     float3 normalOS   : NORMAL;     // 模型空间法线
-                    float2 uv0        : TEXCOORD0;  // UV（用于噪声采样）
+                    float2 uv0        : TEXCOORD0;  // 主纹理 UV
                     float4 color      : COLOR;      // 顶点颜色
                 };
 
@@ -203,24 +216,36 @@ Shader "ZZZ/ZZZ_face"
                     o.positionCS = posInputs.positionCS;
 
                     // 1. 观察空间法线（用于决定膨胀方向）
-                    VertexNormalInputs normalInput = GetVertexNormalInputs(v.normalOS); // 转换法线空间
-                    float3 normalVS = TransformWorldToViewDir(normalInput.normalWS, true);
+                    float3 normalWS = TransformObjectToWorldNormal(v.normalOS);
+                    float3 normalVS = TransformWorldToViewDir(normalWS, true);
 
-                    // 2. Perlin 噪声调制描边粗细：
-                    //    - UV 经 _NoiseTillOffset(xy 平铺, zw 偏移) 变换后采样 2D Perlin
-                    //    - _OutlineNoiseAnimSpeed 沿对角线滚动 UV 实现流动（0=静态）
+                    // 2. Perlin 噪声调制描边粗细（_USE_OUTLINE_NOISE 关闭时 noiseFactor=1，宽度均匀）：
+                    //    - 采样坐标用模型空间 positionOS.xy 投影而非 UV：UV 缝合两侧的同位置副本
+                    //      会采到不同噪声值导致宽度跳变（描边断裂），物体空间坐标天然无缝
+                    //    - 经 _NoiseTillOffset(xy 平铺, zw 偏移) 变换后采样 2D Perlin
+                    //    - _OutlineNoiseAnimSpeed 沿对角线滚动采样坐标实现流动（0=静态）
                     //    - noiseFactor = 1 + n*strength，恒正、在 [1-s, 1+s] 区间围绕基准起伏
                     //    - 顶点色 G 通道仍作为整体粗细遮罩：G=0 无描边，G=1 全宽
-                    float2 noiseUV = v.uv0 * _NoiseTillOffset.xy + _NoiseTillOffset.zw + _Time.y * _OutlineNoiseAnimSpeed;
-                    float noiseFactor = 1.0 + perlinNoise2D(noiseUV) * _OutlineNoiseStrength;
-                    float outlineWidth = _OutlineWidth * v.color.g * noiseFactor;
+                    float noiseFactor = 1.0;
+                    #if defined(_USE_OUTLINE_NOISE)
+                        float2 noiseCoord = v.positionOS.xy * _NoiseTillOffset.xy + _NoiseTillOffset.zw + _Time.y * _OutlineNoiseAnimSpeed;
+                        float n = applyNoiseContrast(perlinNoise2D(noiseCoord), _NoiseContrast);
+                        noiseFactor = 1.0 + n * _OutlineNoiseStrength;
+                    #endif
+                    float outlineWidth = _OutlineWidth* noiseFactor;
 
                     // 3. 裁剪空间下沿法线方向膨胀：
                     //    - normalize 后乘 outlineWidth 得到像素级偏移量
                     //    - 除以 _ScreenParams.xy*0.5 把像素偏移转为 NDC 偏移，修正屏幕宽高比（分辨率无关）
                     //    - 乘 positionCS.w 从 NDC 还原到裁剪空间
                     //    - clampW 距离衰减：w < _OutlineMaxDistance 保持满粗细，超出按 _OutlineMaxDistance/w 衰减
-                    float2 extent = normalize(normalVS.xy) * outlineWidth;
+                    //float2 extent = normalize(normalVS.xy) * outlineWidth;
+                    
+                    // View Direction 投影法
+                    float3 viewDirVS = normalize(float3(0,0,1));
+                    float3 normalOffset = normalize(normalVS - dot(normalVS, viewDirVS)*viewDirVS);
+                    float2 extent = normalOffset.xy * outlineWidth;
+                    
                     extent /= _ScreenParams.xy * 0.5;
                     float clampW = clamp(_OutlineMaxDistance / o.positionCS.w, 0.0, 1.0);
                     o.positionCS.xy += extent * o.positionCS.w * clampW;

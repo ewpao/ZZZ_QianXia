@@ -19,7 +19,7 @@ Shader "ZZZ/ZZZ_face"
         _NoiseContrast("Noise Contrast", Range(0.5, 4)) = 1.0 //噪声对比度（>1 拉开黑白差距，<1 变柔和）
 
         [Header(Debug)]
-        _DebugNoise("Debug Noise", Range(0,1)) = 0 //临时查看柏林噪声贴图（1=显示噪声，0=正常渲染）
+        [Enum(Off,0,Vertex Color,1,View Normal,2,Smooth Normal,3,Noise,4)] _DebugMode("Debug Mode", Float) = 0 //调试可视化下拉：0=正常渲染，1=顶点色，2=观察空间法线，3=平滑法线(uv1)，4=柏林噪声预览
     }
     SubShader
     {
@@ -51,7 +51,7 @@ Shader "ZZZ/ZZZ_face"
                 half _NoiseContrast;
 
                 // 调试
-                half _DebugNoise;
+                half _DebugMode;
             CBUFFER_END
 
             // ===== 2D Perlin 梯度噪声（sin 哈希版，轻量/SM2.0 友好）=====
@@ -107,6 +107,7 @@ Shader "ZZZ/ZZZ_face"
                 {
                     float4 positionOS : POSITION;   // 模型空间坐标
                     float2 uv0        : TEXCOORD0;  // UV
+                    float3 uv1        : TEXCOORD1;  // 平滑法线（脚本写入，调试预览用）
                     float3 normalOS   : NORMAL;     // 模型空间法线
                     float4 color      : COLOR;      // 顶点颜色
                 };
@@ -117,6 +118,7 @@ Shader "ZZZ/ZZZ_face"
                     float2 uv0        : TEXCOORD0;   // 主纹理 UV
                     float3 positionOS : TEXCOORD1;   // 模型空间坐标（噪声调试预览用，与描边 Pass 同源）
                     float3 normalWS   : TEXCOORD2;   // 世界空间法线
+                    float3 uv1        : TEXCOORD3;   // 平滑法线（调试预览用）
                     float4 color      : COLOR;       // 顶点颜色
                 };
 
@@ -132,6 +134,9 @@ Shader "ZZZ/ZZZ_face"
                     o.positionOS = i.positionOS.xyz;
                     // 法线：模型空间 -> 世界空间
                     o.normalWS = TransformObjectToWorldNormal(i.normalOS);
+
+                    // 平滑法线透传（调试预览用）
+                    o.uv1 = i.uv1;
 
                     // 顶点颜色
                     o.color = i.color;
@@ -161,9 +166,18 @@ Shader "ZZZ/ZZZ_face"
                     // 采样顶点色
                     half3 vertexcolor = i.color.rgb;
 
-                    // 临时调试：直出 Perlin 噪声贴图（_DebugNoise=1 时生效）
-                    // 与描边 Pass 同一采样坐标（模型空间 XY 投影），预览即所得
-                    if (_DebugNoise > 0.5)
+                    // ===== 调试可视化（_DebugMode 下拉，0=正常渲染）=====
+                    // 噪声预览与描边 Pass 同一采样坐标（模型空间 XY 投影），所见即所得
+                    if (_DebugMode == 1) // 顶点色
+                        return half4(vertexcolor, 1.0);
+                    if (_DebugMode == 2) // 观察空间法线
+                    {
+                        half3 normalVS = TransformWorldToViewDir(i.normalWS, true);
+                        return half4(abs(normalVS), 1);
+                    }
+                    if (_DebugMode == 3) // uv1 中烘焙的平滑法线
+                        return half4(i.uv1, 1);
+                    if (_DebugMode == 4) // Perlin 噪声预览
                     {
                         float2 nuv = i.positionOS.xy * _NoiseTillOffset.xy + _NoiseTillOffset.zw + _Time.y * _OutlineNoiseAnimSpeed;
                         float n = applyNoiseContrast(perlinNoise2D(nuv), _NoiseContrast) * 0.5 + 0.5;
@@ -171,7 +185,6 @@ Shader "ZZZ/ZZZ_face"
                     }
 
                     return color;
-                    //return half4(vertexcolor.ggg,1); // 调试：直出顶点色
                 }
 
             ENDHLSL

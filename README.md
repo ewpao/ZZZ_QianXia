@@ -1,8 +1,10 @@
 # ZZZ 角色 Toon Shader —— 设计思路总结
 
 > 本文件归纳项目内手写 URP 卡通着色器的整体设计，便于复习与接手。
-> 核心文件：`Assets/Shader/ZZZ_body.shader`、`Assets/Shader/ZZZ_face.shader`
-> 配套工具：`Assets/Editor/RampEditorWindow.cs`（Ramp 贴图生成器）、`Assets/Editor/Gethuidu.cs`（顶点色查看）
+> 核心着色器：`Assets/Shader/ZZZ_body.shader`、`Assets/Shader/ZZZ_face.shader`
+> 开发/测试着色器：`Assets/Scenes/Outline_Test.shader`、`Assets/Scenes/Tool_Test.shader`
+> 工具着色器（烘焙）：`Assets/Editor/BakeSmoothNormalObjectSpace.shader`
+> 配套工具：`Assets/Editor/RampEditorWindow.cs`（Ramp 生成）、`Assets/Editor/SmoothNormalToUV2.cs`（平滑法线写入）、`Assets/Editor/NormalSmoothingTool.cs`（平滑法线烘焙贴图）、`Assets/Scripts/huidu.cs`（顶点色查看）
 
 ---
 
@@ -12,7 +14,7 @@
 
 - **硬边 + 多级色阶阴影**（非平滑渐变），用 Ramp 贴图统一控制明暗色相；
 - **屏幕空间轮廓感边缘光**（Rim），且不被模型内部杂乱法线污染；
-- **像素级、分辨率无关、可调抖动的描边**（Outline）；
+- **距离无关的屏幕空间描边**（Outline）：近处/远处粗细一致、可调抖动、硬边/UV 缝合处不裂；
 - **美术可驱动**：阈值、软硬、强度、颜色全部暴露为材质参数 + Ramp 贴图工作流。
 
 ---
@@ -21,12 +23,17 @@
 
 | 项 | 选择 | 原因 |
 |---|---|---|
-| 管线 | URP (Universal Render Pipeline) | 手写 `HLSLINCLUDE` 公共块，仅包含 `Core/Lighting/DeclareDepthTexture` 三个库 |
+| 管线 | URP (Universal Render Pipeline) | 手写 `HLSLINCLUDE` 公共块，仅包含 `Core / Lighting / DeclareDepthTexture` 三个库 |
 | 着色器 | 纯手写 HLSL（非 ShaderGraph） | 精细控制 Ramp / 屏幕深度 Rim / 描边膨胀 |
 | Pass 数 | **2 Pass**：Forward + Outline | 主色与描边分离，描边用 `Cull Front` 背面膨胀法 |
-| 着色器拆分 | `ZZZ_body` / `ZZZ_face` 分离 | 身体走完整管线（Ramp/Rim/Specular），脸部走简化管线（仅 Half-Lambert + 描边） |
+| 着色器拆分 | `ZZZ_body` / `ZZZ_face` 分离 | 身体走完整管线（Ramp/Rim/Specular/AO），脸部走简化管线（仅 Half-Lambert³ + 描边） |
 | SRP 兼容 | 所有材质参数包进 `CBUFFER_START(UnityPerMaterial)` | 保证 SRP Batcher 合批，避免逐材质 SetPass 开销 |
-| 关键字 | `_USE_RAMPMAP`、`_USE_RIM_LIGHT`、`_USE_AO_MAP` 用 `shader_feature_local` | 变体按需编译，无 Ramp 时零成本 |
+| 关键字 | `_USE_RAMPMAP`、`_USE_OUTLINE_NOISE` 用 `shader_feature_local` | 变体按需编译；关闭 Ramp / 关闭噪声时零成本 |
+
+**关于其它两个「声明但未真正生效」的开关（重要，避免误读）：**
+
+- `_USE_RIM_LIGHT`：在 `ZZZ_body` 的 `HLSLINCLUDE` 中 `#pragma shader_feature_local _USE_RIM_LIGHT` 已声明，但 Rim 计算**没有任何 `#if defined(_USE_RIM_LIGHT)` 分支包裹**——当前 Rim 恒开，该关键字只是占位、不产生实际变体差异。若日后要做「开关边缘光」需补 `#if` 守卫。
+- `_USE_AO_MAP`：Properties 里是 `[Toggle(_USE_AO_MAP)] _UseAOMap`，但**没有**对应的 `#pragma shader_feature_local _USE_AO_MAP`，也没有 `#if defined` 守卫。AO 实际是运行时 uniform 开关：在 frag 里 `ao = lerp(1.0, ao, _AOIntensity * _UseAOMap)`——`_UseAOMap` 恒为 0 或 1 的常量，靠 uniform 混合强弱，而非变体剥离。所以「关 AO」只是把混合权重压到 0，并非剔除 AO 采样指令。
 
 **Pass 结构（Body）**
 
@@ -39,9 +46,12 @@ graph TD
     E --> F[屏幕空间 Rim 边缘光]
     F --> G[Color Modulation 调色]
     G --> H[输出主色]
-    I[Outline Pass Cull Front] --> J[法线膨胀 + 噪声抖动 + 距离衰减]
-    J --> K[纯色描边]
+    I[Outline Pass Cull Front] --> J[uv1 平滑法线优先 + Perlin 噪声抖动]
+    J --> K[视图空间法线外扩 + 距离衰减 + Z 偏移]
+    K --> L[纯色描边]
 ```
+
+> 与经典实现不同：**描边粗细不由顶点色 G 通道控制**（旧版本写法，已被移除），而是由「uv1 平滑法线保证连贯性」+「Perlin 噪声做粗细抖动」两者决定，见 §6.2 / §6.3。
 
 ---
 
@@ -92,7 +102,7 @@ RampMap (横向 U × 纵向 V)
       return v;
   }
   ```
-  即：RampID 的 **R>0.6** 选 V=0.9 行、**G>0.6** 选 V=0.5、**B>0.6** 选 V=0.3，否则用默认 V=0.1。这样美术可以在 RampID 贴图上用纯色笔刷把角色不同部位（头发/身体/衣服）指向 Ramp 贴图不同行的配色，实现**一贴图多套阴影色**。
+  即：RampID 的 **R>0.6** 选 V=0.9 行、**G>0.6** 选 V=0.5、**B>0.6** 选 V=0.3，否则用默认 V=0.1。这样美术可以在 RampID 贴图上用纯色笔刷把角色不同部位（头发/身体/衣服）指向 Ramp 贴图不同行的配色，实现**一贴图多套阴影色**。（项目中 `Assets/Models/.../tex/rampID_ti.png` 与 `rampID_fa.png` 即身体/脸部的 RampID 遮罩。）
 
 ### 3.2 合成
 
@@ -100,7 +110,7 @@ RampMap (横向 U × 纵向 V)
 half3 RampID     = SAMPLE_TEXTURE2D(_RampID, sampler_RampID, i.uv0);
 half2  rampUV    = half2(rampU, GetrampV(RampID));
 half3  rampColor = SAMPLE_TEXTURE2D(_RampMap, sampler_RampMap, rampUV).rgb;
-// 用 Ramp 颜色对主色做阴影调色，_ShadowIntensity 控制强弱
+// 用 Ramp 颜色对主色做阴影调色，_ShadowIntensity 控制强弱（受 _USE_RAMPMAP 守卫）
 color = lerp(color, color * rampColor, _ShadowIntensity);
 ```
 
@@ -114,6 +124,8 @@ half shadow  = (ambient + halfLambert) * 0.5;            // AO 与光照各半�
 shadow       = lerp(shadow, 0,  step(shadow, 0.05));     // 压死暗部
 shadow       = lerp(shadow, 1,  step(0.95, shadow));     // 提亮亮部
 ```
+
+> 注意：`_UseAOMap` 是运行时 uniform（见 §1），不是 shader keyword，关掉只是把混合权重压到 0。
 
 ### 3.4 Ramp 贴图生成器（工具）
 
@@ -174,48 +186,92 @@ color.rgb += _RimColor.rgb * rimIntensity * _RimIntensity;
 - `_RimColor` / `_RimIntensity`：颜色与强度。
 
 > 设计优势：相比纯菲涅尔 Rim，这种方法在**角色被自身四肢遮挡**的轮廓处也能正确描出边缘光，且不会在正面平坦区域乱发光。
+> 依赖：需 `#include "Packages/.../DeclareDepthTexture.hlsl"` 声明 `_CameraDepthTexture`，且 URP 资源里开启 Depth Texture（Body 已包含，Face 未启用 Rim）。
 
 ---
 
-## 6. 描边系统 Outline（背面膨胀法）
+## 6. 描边系统 Outline（背面膨胀法 · 视图空间外扩）
 
-经典 **Cull Front + 法线外扩**，但做了四层精细化：
+经典 **`Cull Front` + 法线外扩**，但做了四层精细化。`ZZZ_body` / `ZZZ_face` 共用同一套 Outline Pass 逻辑（含 uv1 平滑法线）；`Outline_Test` / `Tool_Test` 是简化版（直接用法线 `normalOS`，无 uv1，仅用于孤立调试描边参数）。
 
-### 6.1 像素级宽度（分辨率无关 + 宽高比修正）
-
-```hlsl
-float2 extent = normalize(normalVS.xy) * outlineWidth;
-extent /= _ScreenParams.xy * 0.5;        // 像素偏移 → NDC 偏移，修正屏幕宽高比
-o.positionCS.xy += extent * o.positionCS.w * clampW;  // ×w 从 NDC 还原到裁剪空间
-```
-关键点：除以 `_ScreenParams.xy*0.5` 保证**不同分辨率下描边粗细一致**，且横纵不拉伸。
-
-### 6.2 顶点色 G 通道粗细遮罩
-
-用顶点色（Vertex Color）的 **G 通道** 控制局部描边粗细，实现「硬边/软边」分区（如眼睛内轮廓、嘴唇线）：
-
-- **Body**：`outlineWidth = _OutlineWidth * lerp(0.3, 1.0, color.g) * noiseFactor`
-  —— G=0 仍保留 0.3 倍基础描边（不会完全消失）；
-- **Face**：`outlineWidth = _OutlineWidth * color.g * noiseFactor`
-  —— G=0 直接无描边（面部内描边靠顶点色精确控制）。
-
-### 6.3 Perlin 噪声抖动（手绘感）
+### 6.1 视图空间法线外扩（核心数学）
 
 ```hlsl
-float2 noiseUV = v.uv0 * _NoiseTillOffset.xy + _NoiseTillOffset.zw
-                 + _Time.y * _OutlineNoiseAnimSpeed;        // 沿对角线滚动 UV
-float noiseFactor = 1.0 + perlinNoise2D(noiseUV) * _OutlineNoiseStrength;
+VertexPositionInputs posInputs = GetVertexPositionInputs(v.positionOS.xyz);
+float3 positionVS = posInputs.positionVS;
+// 平滑法线优先（见 §6.2），回退到硬法线
+float3 smoothNormalOS = dot(v.uv1, v.uv1) > 1e-6 ? v.uv1 : v.normalOS;
+float3 normalVS = normalize(TransformWorldToViewDir(TransformObjectToWorldNormal(smoothNormalOS)));
+
+float outlineWidth = _OutlineWidth * noiseFactor;     // noiseFactor 见 §6.3
+
+float viewDepth = -positionVS.z;                       // 观察空间深度（正值）
+float clampW    = saturate(_OutlineMaxDistance / viewDepth);
+positionVS.xy  += normalVS.xy * outlineWidth * 0.001 * viewDepth * clampW;
+
+o.positionCS = mul(UNITY_MATRIX_P, float4(positionVS, 1.0));
+o.positionCS.z += -_OutlineZOffset * o.positionCS.w;   // 见 §6.4
 ```
-`noiseFactor ∈ [1-strength, 1+strength]`，让描边粗细随机起伏，模拟手绘 ink 抖动。`_NoiseTillOffset` 对齐 Unity Tiling/Offset 用法；`_OutlineNoiseAnimSpeed>0` 时描边"流动"。
+
+**为什么在视图空间外扩，而不是裁剪空间 NDC 偏移：**
+- 透视投影下，同一个模型空间位移在近处和远处的屏幕投影尺寸不同（约 ∝ 1/z）。若直接沿法线加固定 NDC 偏移，远处描边会「变粗」、近处「变细」，且会随相机距离漂移。
+- 这里在**视图空间**沿 `normalVS.xy` 外扩后再投影，并显式乘 `viewDepth`（= `-positionVS.z`）抵消 1/z 缩放，使**屏幕空间描边宽度近似与距离无关**——近处远处一样粗。
+- `0.001` 是把 `_OutlineWidth`（0~10 的"像素级"语义）映射到视图空间单位的经验缩放系数。
+
+**Body 的细化（视图方向投影法）：** `ZZZ_body` 在取 `.xy` 前先把法线投影到「垂直于视线的平面」，去掉朝相机方向的成分，得到更纯粹的屏幕切向外扩：
+```hlsl
+float3 viewDirVS   = normalize(-positionVS);
+float3 normalOffset = normalize(normalVS - dot(normalVS, viewDirVS) * viewDirVS);
+float2 extent = normalOffset.xy;
+positionVS.xy += extent * outlineWidth * 0.001 * viewDepth * clampW;
+```
+`ZZZ_face` 则用原始 `normalVS.xy`（轮廓更"鼓"一点）。两者差异极小，仅在偏心顶点上略有体现。
+
+### 6.2 平滑法线（uv1）解决硬边 / UV 缝合断裂  ★核心工作流
+
+> 这是当前描边连贯性的真正机制——**不是顶点色 G 通道**（旧写法已移除，README 历史版本曾误述）。
+
+MMD 导入模型在 UV 缝合处、硬边、材质边界会把一个顶点**拆成多个副本**，每个副本带各自的硬法线。若直接用 `normalOS` 做背面膨胀，副本两侧的膨胀方向不一致，描边会在缝合处**开裂/锯齿**。
+
+解决方式：烘焙一份「按位置焊接后的平均法线」写回网格的 **UV 通道 1（`TEXCOORD1`，Unity 旧 API 称 uv2）**，描边 Pass 优先用它：
+
+```hlsl
+float3 smoothNormalOS = dot(v.uv1, v.uv1) > 1e-6 ? v.uv1 : v.normalOS;
+```
+
+- `dot(v.uv1, v.uv1) > 1e-6` 是"是否已烘焙"的判断：uv1 为零向量（未烘焙）时回落到 `normalOS`，保证没跑工具也能出描边。
+- 烘焙工具见 §12：`SmoothNormalToUV2.cs` 直接写网格 UV1；`NormalSmoothingTool.cs` + `BakeSmoothNormalObjectSpace.shader` 烘焙成贴图（项目里 `Assets/TEXTURES/U_Char_*_SmoothNormal_OS.png` 即产物，可用于 `_DebugMode = Smooth Normal` 预览，见 §9）。
+
+### 6.3 Perlin 噪声抖动（物体空间采样，无缝）
+
+```hlsl
+float noiseFactor = 1.0;
+#if defined(_USE_OUTLINE_NOISE)
+    float2 noiseCoord = v.positionOS.xy * _NoiseTillOffset.xy + _NoiseTillOffset.zw
+                        + _Time.y * _OutlineNoiseAnimSpeed;   // 沿对角线滚动坐标
+    float n = applyNoiseContrast(perlinNoise2D(noiseCoord), _NoiseContrast);
+    noiseFactor = 1.0 + n * _OutlineNoiseStrength;            // ∈ [1-s, 1+s]，恒正
+#endif
+float outlineWidth = _OutlineWidth * noiseFactor;
+```
+
+`noiseFactor ∈ [1-strength, 1+strength]`，让描边粗细随机起伏，模拟手绘 ink 抖动。
+
+**关键细节——采样坐标用物体空间 `positionOS.xy`，不是 UV：**
+- UV 在缝合处两侧的同位置副本会映射到不同 UV，采到的噪声值不同 → 描边宽度在缝合处跳变 → 再次开裂。
+- 物体空间坐标是模型固有的、缝合两侧副本共享同一坐标，因此噪声天然**无缝**，与 §6.2 的平滑法线目标一致。
+- `_NoiseTillOffset`：xy = 平铺密度（物体空间/米），zw = 偏移；`_OutlineNoiseAnimSpeed > 0` 时坐标沿对角线滚动，描边"流动"。
+- `_USE_OUTLINE_NOISE` 关闭后整个噪声分支被编译剔除，`noiseFactor` 恒为 1（宽度均匀、零噪声开销）。
 
 ### 6.4 距离衰减 + Z 偏移
 
 ```hlsl
-float clampW = clamp(_OutlineMaxDistance / o.positionCS.w, 0.0, 1.0);  // 远处自动变细
-o.positionCS.z += -_OutlineZOffset;   // URP Reverse-Z：正值沉后，负值前移，防穿模
+float clampW = saturate(_OutlineMaxDistance / viewDepth);   // 实际公式
+o.positionCS.z += -_OutlineZOffset * o.positionCS.w;        // 实际公式
 ```
-- `_OutlineMaxDistance`：衰减起点（米），该距离内满粗细，超出按 `MaxDist/w` 衰减；
-- `_OutlineZOffset`：微调描边与主体深度关系，避免描边被主体遮挡闪烁。
+
+- `_OutlineMaxDistance`：衰减起点（米）。`clampW = saturate(MaxDist / viewDepth)` → 当 `viewDepth < MaxDist`（近）时比值 >1 被 saturate 到 1，**保持满粗细**；当 `viewDepth > MaxDist`（远）时比值 <1，按比例**线性变细**。注意这是"近满远细"的反比关系，而非把距离当分母直接除。
+- `_OutlineZOffset`：微调描边与主体深度关系，防穿模/控遮挡。写在裁剪空间且乘 `positionCS.w`（`z` 是 pre-divide 的齐次坐标，必须 ×w 才是常数深度偏移）；URP 用 **Reverse-Z**，故**正值沉后、负值前移**。
 
 ---
 
@@ -244,12 +300,17 @@ float perlinNoise2D(float2 p)
 {
     float2 pi = floor(p), pf = frac(p);
     float2 u  = pf*pf*pf*(pf*(pf*6.0 - 15.0) + 10.0);   // quintic（C²）衰减，消除网格接缝
-    // 四角梯度点积 + 双线性插值
-    ...
-    return lerp(lerp(n00, n10, u.x), lerp(n01, n11, u.x variant), u.y);
+    float n00 = dot(hash22(pi + float2(0.0, 0.0)), pf - float2(0.0, 0.0));
+    float n10 = dot(hash22(pi + float2(1.0, 0.0)), pf - float2(1.0, 0.0));
+    float n01 = dot(hash22(pi + float2(0.0, 1.0)), pf - float2(0.0, 1.0));
+    float n11 = dot(hash22(pi + float2(1.0, 1.0)), pf - float2(1.0, 1.0));
+    return lerp(lerp(n00, n10, u.x), lerp(n01, n11, u.x), u.y);
 }
+
+// 噪声对比度：sign(n)*|n|^(1/c)，c>1 拉开黑白、c<1 变柔和，零点结构不变
+float applyNoiseContrast(float n, float c) { return sign(n) * pow(abs(n), 1.0 / c); }
 ```
-**要点**：用 **quintic 权重** `6t⁵-15t⁴+10t³` 而非 `smoothstep(3t²-2t³)`，保证二阶连续，避免噪声网格可见接缝。
+**要点**：用 **quintic 权重** `6t⁵-15t⁴+10t³` 而非 `smoothstep(3t²-2t³)`，保证二阶连续，避免噪声网格可见接缝。`applyNoiseContrast` 让美术在不改变噪声结构的前提下，用 `_NoiseContrast` 拉开或柔化黑白差距。
 
 ---
 
@@ -257,29 +318,80 @@ float perlinNoise2D(float2 p)
 
 | 工具 / 参数 | 位置 | 用途 |
 |---|---|---|
-| `_DebugNoise` | Body/Face Shader | =1 时片段直出 Perlin 噪声灰度图，检查描边抖动图案 |
-| 顶点色直出 | frag 注释分支 `return half4(vertexcolor.ggg,1)` | 调试顶点色分布 |
-| `Gethuidu.cs` (`Tools/Vertex Color/Print Selected Mesh Colors`) | Editor | 打印选中 Mesh 顶点色 RGBA，统计 G 通道取值（校准描边遮罩） |
-| `RampEditorWindow.cs` (`Tool/Ramp Generator`) | Editor | 可视化生成 `ramp.png`（SmoothStep 横向过渡 + 双色 Lerp） |
+| `_DebugMode` 枚举（Off=0 / Vertex Color=1 / View Normal=2 / Smooth Normal=3 / Noise=4） | `ZZZ_body` / `ZZZ_face` 的 Forward frag | 实时切换调试可视化：① 顶点色（Body 输出 `color.ggg`，Face 输出 `color.rgb`）；② 观察空间法线 `abs(normalVS)`；③ **uv1 烘焙的平滑法线**（验证 §6.2 烘焙结果对不对）；④ Perlin 噪声灰度预览（与描边 Pass 同采样坐标，所见即所得） |
+| `_DebugNoise` | `Tool_Test` 的 Forward frag | =1 时片段直出 Perlin 噪声灰度图，专给测试 shader 看抖动图案 |
+| `huidu.cs`（`Assets/Scripts`，`ReadVertexColorG` + ContextMenu「打印顶点色G值」） | Runtime 组件 | 打印选中 Mesh 顶点色 G 通道取值（校准用，当前描边已不依赖顶点色） |
+| `RampEditorWindow.cs`（`Tool/Ramp Generator`） | Editor | 可视化生成 `Assets/TEXTURES/ramp.png`（SmoothStep 横向过渡 + 双色 Lerp） |
+| `SmoothNormalToUV2.cs`（`Tools/Write Smooth Normal To UV2`） | Editor | 把平滑法线写入网格 UV1（见 §12） |
+| `NormalSmoothingTool.cs`（`Tools/Smooth Normal Tool`） | Editor | 烘焙平滑法线贴图（见 §12） |
+
+> 注意：`_DebugMode` 与 `_DebugNoise` 是不同的两套——前者是 Body/Face 的 5 档枚举，后者仅 `Tool_Test` 用。历史 README 曾把 `_DebugNoise` 误标到 Body/Face，已更正。
 
 ---
 
-## 10. 关键材质参数速查（Body）
+## 10. 关键材质参数速查（Body / Face 共有部分 + Body 独有）
+
+**共有（Body + Face）**
 
 | 参数 | 类型 | 含义 |
 |---|---|---|
 | `_BaseMap` | 2D | 基础色贴图 |
-| `_AOMap` / `_AOIntensity` / `_UseAOMap` | 2D / F / Toggle | AO 贴图与强度 |
+| `_OutlineWidth` / `_OutlineColor` / `_OutlineMaxDistance` / `_OutlineZOffset` | F / C / F / F | 描边全套（见 §6） |
+| `_NoiseTillOffset` / `_OutlineNoiseStrength` / `_OutlineNoiseAnimSpeed` / `_NoiseContrast` | V4 / F / F / F | 描边噪声抖动（见 §6.3） |
+| `_DebugMode` | Enum | 调试可视化下拉（见 §9） |
+
+**Body 独有**
+
+| 参数 | 类型 | 含义 |
+|---|---|---|
+| `_AOMap` / `_AOIntensity` / `_UseAOMap` | 2D / F / Toggle(uniform) | AO 贴图与强度（见 §3.3，注意非 keyword） |
 | `_SpecularMap` / `_SpecularPower` / `_SpecularRegion` | 2D / F / F | 高光遮罩 / 强度 / 范围 |
-| `_RampMap` / `_RampID` / `_UseRampMap` | 2D / 2D / Toggle | Ramp 色阶图 / 部位遮罩 / 开关 |
+| `_RampMap` / `_RampID` / `_UseRampMap` | 2D / 2D / Toggle(keyword) | Ramp 色阶图 / 部位遮罩 / 开关（见 §3） |
 | `_ShadowThreshold` / `_ShadowSoftness` / `_ShadowIntensity` | F / F / F | 明暗交界位置 / 软硬 / 强度 |
-| `_RimIntensity` / `_RimColor` / `_RimWidth` / `_DepthThreshold` / `_FresnelMask` | F / C / F / F / F | 边缘光全套 |
-| `_ColourModulation` / `_Saturation` | C / F | 校色调色 |
-| `_OutlineWidth` / `_OutlineColor` / `_OutlineMaxDistance` / `_OutlineZOffset` | F / C / F / F | 描边全套 |
-| `_NoiseTillOffset` / `_OutlineNoiseStrength` / `_OutlineNoiseAnimSpeed` / `_DebugNoise` | V4 / F / F / F | 描边噪声抖动 |
+| `_RimIntensity` / `_RimColor` / `_RimWidth` / `_DepthThreshold` / `_FresnelMask` | F / C / F / F / F | 屏幕深度边缘光全套（见 §5） |
+| `_ColourModulation` / `_Saturation` | C / F | 校色调色（见 §7） |
+
+> Face 无 AO / Specular / Ramp / Rim 参数，仅 `_BaseMap` + 描边 + `_DebugMode`，走纯 Half-Lambert³ 光照。
 
 ---
 
-## 11. 一句话设计哲学
+## 11. 平滑法线烘焙工具链（与 §6.2 配套）
 
-> **「用数据驱动替代硬编码」**：明暗色阶交给 Ramp 贴图、部位分层交给 RampID 遮罩、描边粗细交给顶点色 G 通道、抖动交给 Perlin 噪声。着色器本身只负责「正确的数学」（Half-Lambert、屏幕深度差、NDC 像素对齐），美术在贴图与参数里完成全部风格表达——这正是二次元 Toon 渲染可维护性的关键。
+描边连贯性依赖"按位置焊接的平均法线"，有两套互补工具：
+
+### 11.1 写入网格 UV1（运行时直接读，主用）
+
+`Assets/Editor/SmoothNormalToUV2.cs` → 菜单 `Tools/Write Smooth Normal To UV2`：
+1. 选中带 `MeshFilter` 或 `SkinnedMeshRenderer` 的模型（MMD 角色多为后者）；
+2. 复制 mesh（不破坏原始 FBX 资产）；
+3. **按位置量化分桶焊接**：用 `Vector3Int` 做 key（精度 1e-5 米），把同一位置的拆分副本（硬边/UV 缝合/材质边界）归入同一组；组内平均法线后**写回组内每一个副本**，保证副本拿到同一个平滑法线；
+4. 把 `xyz=平滑法线` 写入 `SetUVs(1, ...)` → 即 shader 里的 `TEXCOORD1 / uv1`；
+5. 存为 `.asset` 并挂回 renderer（带 Undo）。
+
+### 11.2 烘焙成贴图（预览/Debug 用）
+
+`Assets/Editor/NormalSmoothingTool.cs` → 菜单 `Tools/Smooth Normal Tool`：
+- 支持 **角度阈值** `smoothangle`：组内只累加与任意面夹角 ≤ 阈值的面，超出阈值的面不参与平滑（保留原有硬边语义）；全被剔除时退化为全组平均，保证拐角也不裂；
+- 用 `Assets/Editor/BakeSmoothNormalObjectSpace.shader` 把模型空间法线按 **UV0** 烘焙成一张 `Assets/TEXTURES/<MeshName>_SmoothNormal_OS.png`：
+  - 顶点着色器把 `uv*2-1` 直接当裁剪坐标（全屏铺 UV0），`#if UNITY_UV_STARTS_AT_TOP` 翻转 Y 对齐；
+  - 片元把法线 `n*0.5+0.5` 编码进 `[0,1]`，未覆盖区填中性灰 `(0.5,0.5,0.5)`；
+  - 贴图 `sRGBTexture=false`、`mipmap=false`、`Clamp`，因为法线是线性数据。
+- 该贴图主要供 `_DebugMode = Smooth Normal`（uv1 通道）对照校验，或直接作为纹理化方案使用。
+
+---
+
+## 12. 开发 / 测试着色器
+
+| 着色器 | 作用 | 与正式着色器的关系 |
+|---|---|---|
+| `Assets/Scenes/Outline_Test.shader`（`ZZZ/Outline_Test`） | 极简沙盒：一个 `UniversalForward` 纯色 Pass（`_BaseColor` 仅让模型可见）+ 一个 Outline Pass。无光照、无 Ramp。 | 孤立验证描边参数（宽度/噪声/距离衰减/Z 偏移）在任意几何体上的表现，排除主着色器其它系统的干扰 |
+| `Assets/Scenes/Tool_Test.shader`（`ZZZ/Tool_Test`） | 基础 Forward（Half-Lambert + `_BaseMap`）+ Outline，额外带 `_DebugNoise` 开关直出噪声图 | 在"带光照"的前提下调试描边与噪声图案，比 Outline_Test 多一层主色观察 |
+| `Assets/Editor/BakeSmoothNormalObjectSpace.shader`（`Hidden/BakeSmoothNormalObjectSpace`） | 不在渲染管线内，仅供 `NormalSmoothingTool.cs` 离屏烘焙平滑法线贴图 | 工具依赖，不参与角色渲染 |
+
+> 测试 shader 的 Outline Pass 直接用 `normalOS`（不取 uv1），因为它们通常挂在未跑平滑法线烘焙的简单网格上；正式 `ZZZ_body` / `ZZZ_face` 才启用 uv1 平滑法线分支。
+
+---
+
+## 13. 一句话设计哲学
+
+> **「用数据驱动替代硬编码」**：明暗色阶交给 Ramp 贴图、部位分层交给 RampID 遮罩、**描边连贯性交给 uv1 平滑法线（焊接平均）**、粗细抖动交给 Perlin 噪声。着色器本身只负责「正确的数学」（Half-Lambert、屏幕深度差、视图空间法线外扩 + 透视补偿），美术在贴图与参数里完成全部风格表达——这正是二次元 Toon 渲染可维护性的关键。

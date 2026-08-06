@@ -49,7 +49,7 @@ Shader "ZZZ/ZZZ_body"
         _NoiseContrast("Noise Contrast", Range(0.5, 4)) = 1.0 //噪声对比度（>1 拉开黑白差距，<1 变柔和）
 
         [Header(Debug)]
-        _DebugNoise("Debug Noise", Range(0,1)) = 0 //临时查看柏林噪声贴图（1=显示噪声，0=正常渲染）
+        [Enum(Off,0,Vertex Color,1,View Normal,2,Smooth Normal,3,Noise,4)] _DebugMode("Debug Mode", Float) = 0 //调试可视化下拉：0=正常渲染，1=顶点色，2=观察空间法线，3=平滑法线(uv1)，4=柏林噪声预览
     }
     SubShader
     {
@@ -120,7 +120,7 @@ Shader "ZZZ/ZZZ_body"
                 half _NoiseContrast;
 
                 // 调试
-                half _DebugNoise;
+                half _DebugMode;
             CBUFFER_END
 
             half GetrampV(half3 rampIDtu)
@@ -323,19 +323,22 @@ Shader "ZZZ/ZZZ_body"
                         color.rgb = lerp(color.rgb,lerp(color.rgb , color.rgb+specularMap.a , halfLambert),_SpecularPower);
                     }
 
-                    // 临时调试：直出 Perlin 噪声贴图（_DebugNoise=1 时生效）
-                    // 与描边 Pass 同一采样坐标（模型空间 XY 投影），预览即所得
-                    if (_DebugNoise > 0.5)
-                    {
+                    // ===== 调试可视化（_DebugMode 下拉，0=正常渲染）=====
+                    // 噪声预览与描边 Pass 同一采样坐标（模型空间 XY 投影），所见即所得
+                    if (_DebugMode == 1) // 顶点色
+                        return half4(vertexcolor.ggg, 1.0);
+                    if (_DebugMode == 2) // 观察空间法线
+                        return half4(abs(normalVS), 1);
+                    if (_DebugMode == 3) // uv1 中烘焙的平滑法线
+                        return half4(i.uv1, 1);
+                    if (_DebugMode == 4) // Perlin 噪声预览
+                    {   
                         float2 nuv = i.positionOS.xy * _NoiseTillOffset.xy + _NoiseTillOffset.zw + _Time.y * _OutlineNoiseAnimSpeed;
                         float n = applyNoiseContrast(perlinNoise2D(nuv), _NoiseContrast) * 0.5 + 0.5;
                         return half4(n, n, n, 1);
                     }
 
-                    //return half4(color,basecolor.a);
-                    //return half4(vertexcolor.ggg,1.0); // 调试：查看各通道顶点色
-                    //return half4(abs(normalVS),1); // 调试：查看观察空间法线
-                    return float4(i.uv1,1); // 调试：查看uv1中的平滑法线
+                    return half4(color, basecolor.a);
                 }
 
             ENDHLSL
@@ -391,15 +394,14 @@ Shader "ZZZ/ZZZ_body"
                     float outlineWidth = _OutlineWidth * noiseFactor;
 
                     // 3. 沿视图空间法线膨胀（背面法）：
-                    //    - 只用 normalVS.xy 在屏幕平面方向外扩，z 方向不动，避免拉近时穿模
                     //    - 乘 viewDepth 抵消透视投影的 1/z 缩放，使屏幕空间描边宽度近似一致（不受距离影响）
                     //    - clampW 距离衰减：viewDepth < _OutlineMaxDistance 保持满粗细，超出按比例变细
                     //    - 0.001 是 _OutlineWidth(0~10) 到视图空间单位的缩放系数
 
                     // View Direction 投影法
-                    float3 viewDirVS = normalize(float3(0,0,1));
+                    float3 viewDirVS = normalize(-positionVS);
                     float3 normalOffset = normalize(normalVS - dot(normalVS, viewDirVS)*viewDirVS);
-                    float2 extent = normalOffset.xy * outlineWidth;
+                    float2 extent = normalOffset.xy;
 
                     float viewDepth = -positionVS.z;
                     float clampW = saturate(_OutlineMaxDistance / viewDepth);

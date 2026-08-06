@@ -173,7 +173,7 @@ Shader "ZZZ/ZZZ_body"
             {
                 float4 positionOS : POSITION;   // 模型空间坐标
                 float2 uv0        : TEXCOORD0;  // 主纹理 UV
-                float2 uv1        : TEXCOORD1;  // 高光贴图 UV
+                float3 uv1        : TEXCOORD1;  // 平滑法线
                 float3 normalOS   : NORMAL;     // 模型空间法线
                 float4 color      : COLOR;      // 顶点颜色
             };
@@ -182,13 +182,13 @@ Shader "ZZZ/ZZZ_body"
             {
                 float4 positionCS   : SV_POSITION; // 裁剪空间坐标
                 float2 uv0          : TEXCOORD0;   // 主纹理 UV
-                float2 uv1          : TEXCOORD1;   // 高光贴图 UV
-                float3 normalWS     : TEXCOORD2;   // 世界空间法线
-                float3 normalVS     : TEXCOORD3;   // 观察空间法线
-                float3 positionVS   : TEXCOORD4;   // 观察空间坐标
-                float4 positionNDC  : TEXCOORD5;   // NDC空间坐标
-                float3 positionWS   : TEXCOORD6;   // 世界空间坐标
-                float3 positionOS   : TEXCOORD7;   // 模型空间坐标（噪声调试预览用，与描边 Pass 同源）
+                float3 normalWS     : TEXCOORD1;   // 世界空间法线
+                float3 normalVS     : TEXCOORD2;   // 观察空间法线
+                float3 positionVS   : TEXCOORD3;   // 观察空间坐标
+                float4 positionNDC  : TEXCOORD4;   // NDC空间坐标
+                float3 positionWS   : TEXCOORD5;   // 世界空间坐标
+                float3 positionOS   : TEXCOORD6;   // 模型空间坐标（噪声调试预览用，与描边 Pass 同源）
+                float3 uv1          : TEXCOORD7;   // 平滑法线
                 float4 color        : COLOR;       // 顶点颜色
             };
 
@@ -227,7 +227,7 @@ Shader "ZZZ/ZZZ_body"
 
                     // UV 传递（应用 Tiling/Offset）
                     o.uv0 = TRANSFORM_TEX(i.uv0, _BaseMap);
-                    o.uv1 = TRANSFORM_TEX(i.uv1, _SpecularMap);
+                    o.uv1 = i.uv1;
 
                     // normal
                     o.normalWS = normalInput.normalWS;//将世界坐标法线传递给输出变量
@@ -249,7 +249,7 @@ Shader "ZZZ/ZZZ_body"
 
                     // Lambert Diffuse
                     half4 basecolor    = SAMPLE_TEXTURE2D(_BaseMap,    sampler_BaseMap,    i.uv0);
-                    half4 specularMap  = SAMPLE_TEXTURE2D(_SpecularMap, sampler_SpecularMap, i.uv1);
+                    half4 specularMap  = SAMPLE_TEXTURE2D(_SpecularMap, sampler_SpecularMap, i.uv0);
 
                     half3 N = normalize(i.normalWS);
                     half3 L = normalize(light.direction);
@@ -332,9 +332,10 @@ Shader "ZZZ/ZZZ_body"
                         return half4(n, n, n, 1);
                     }
 
-                    return half4(color,basecolor.a);
+                    //return half4(color,basecolor.a);
                     //return half4(vertexcolor.ggg,1.0); // 调试：查看各通道顶点色
                     //return half4(abs(normalVS),1); // 调试：查看观察空间法线
+                    return float4(i.uv1,1); // 调试：查看uv1中的平滑法线
                 }
 
             ENDHLSL
@@ -367,12 +368,13 @@ Shader "ZZZ/ZZZ_body"
                 {
                     OutlineVaryings o;
 
+                    // 1. 视图空间位置与法线（背面法核心：在视图空间沿法线膨胀后再投影）
                     VertexPositionInputs posInputs = GetVertexPositionInputs(v.positionOS.xyz);
-                    o.positionCS = posInputs.positionCS;
-
-                    // 1. 观察空间法线（用于决定膨胀方向）
-                    float3 normalWS = TransformObjectToWorldNormal(v.normalOS);
-                    float3 normalVS = TransformWorldToViewDir(normalWS);
+                    float3 positionVS = posInputs.positionVS;
+                    // 平滑法线优先：从 TEXCOORD1（脚本写入的平滑法线）取，解决硬边/UV缝合处描边断裂；
+                    // 未烘焙时 uv1 为 0，回退到硬法线 normalOS
+                    float3 smoothNormalOS = dot(v.uv1, v.uv1) > 1e-6 ? v.uv1 : v.normalOS;
+                    float3 normalVS = normalize(TransformWorldToViewDir(TransformObjectToWorldNormal(smoothNormalOS)));
 
                     // 2. Perlin 噪声调制描边粗细（_USE_OUTLINE_NOISE 关闭时 noiseFactor=1，宽度均匀）：
                     //    - 采样坐标用模型空间 positionOS.xy 投影而非 UV：UV 缝合两侧的同位置副本
@@ -380,41 +382,33 @@ Shader "ZZZ/ZZZ_body"
                     //    - 经 _NoiseTillOffset(xy 平铺, zw 偏移) 变换后采样 2D Perlin
                     //    - _OutlineNoiseAnimSpeed 沿对角线滚动采样坐标实现流动（0=静态）
                     //    - noiseFactor = 1 + n*strength，恒正、在 [1-s, 1+s] 区间围绕基准起伏
-                    //    - 顶点色 G 通道仍作为整体粗细遮罩：G=0 取 0.3 倍宽，G=1 全宽
                     float noiseFactor = 1.0;
                     #if defined(_USE_OUTLINE_NOISE)
                         float2 noiseCoord = v.positionOS.xy * _NoiseTillOffset.xy + _NoiseTillOffset.zw + _Time.y * _OutlineNoiseAnimSpeed;
                         float n = applyNoiseContrast(perlinNoise2D(noiseCoord), _NoiseContrast);
                         noiseFactor = 1.0 + n * _OutlineNoiseStrength;
                     #endif
-                    float outlineWidth = _OutlineWidth* noiseFactor;
+                    float outlineWidth = _OutlineWidth * noiseFactor;
 
-                    // 3. 裁剪空间下沿法线方向膨胀：
-                    //    - normalize 后乘 outlineWidth 得到像素级偏移量
-                    //    - 除以 _ScreenParams.xy*0.5 把像素偏移转为 NDC 偏移，修正屏幕宽高比（分辨率无关）
-                    //    - 乘 positionCS.w 从 NDC 还原到裁剪空间
-                    //    - clampW 距离衰减：w < _OutlineMaxDistance 保持满粗细，超出按 _OutlineMaxDistance/w 衰减
-                    
-                    //float2 extent = normalVS.xy * outlineWidth;
+                    // 3. 沿视图空间法线膨胀（背面法）：
+                    //    - 只用 normalVS.xy 在屏幕平面方向外扩，z 方向不动，避免拉近时穿模
+                    //    - 乘 viewDepth 抵消透视投影的 1/z 缩放，使屏幕空间描边宽度近似一致（不受距离影响）
+                    //    - clampW 距离衰减：viewDepth < _OutlineMaxDistance 保持满粗细，超出按比例变细
+                    //    - 0.001 是 _OutlineWidth(0~10) 到视图空间单位的缩放系数
 
                     // View Direction 投影法
-                    float3 normalOffset =
-                    normalVS - dot(normalVS,float3(0,0,1))*float3(0,0,1);
+                    float3 viewDirVS = normalize(float3(0,0,1));
+                    float3 normalOffset = normalize(normalVS - dot(normalVS, viewDirVS)*viewDirVS);
+                    float2 extent = normalOffset.xy * outlineWidth;
 
-                    float len = length(normalOffset.xy);
+                    float viewDepth = -positionVS.z;
+                    float clampW = saturate(_OutlineMaxDistance / viewDepth);
+                    positionVS.xy += extent * outlineWidth * 0.001 * viewDepth * clampW;
 
-                    if(len < 0.001)
-                        normalOffset.xy=float2(0,1);
-                    else
-                        normalOffset.xy/=len;
+                    // 4. 投影到裁剪空间
+                    o.positionCS = mul(UNITY_MATRIX_P, float4(positionVS, 1.0));
 
-                    float2 extent=normalOffset.xy*_OutlineWidth;
-
-                    extent /= _ScreenParams.xy * 0.5;
-                    float clampW = clamp(_OutlineMaxDistance / o.positionCS.w, 0.0, 1.0);
-                    o.positionCS.xy += extent * o.positionCS.w * clampW;
-
-                    // 4. Z 偏移：调整描边与主体的深度关系，防穿模/控遮挡
+                    // 5. Z 偏移：调整描边与主体的深度关系，防穿模/控遮挡
                     //    正值沉后(URP Reverse-Z)，负值前移；clip 空间常数偏移，近处效果更强
                     o.positionCS.z += -_OutlineZOffset * o.positionCS.w;
 

@@ -14,6 +14,7 @@ Shader "ZZZ/ZZZ_body"
         _SpecularMap("Specular Map" ,2D) = "black"{} //高光贴图采样
         _SpecularPower("Specular Power", Range(0,1)) = 0.25 //高光强度
         _SpecularRegion("Specular Region", Range(0,1)) = 0.3 //高光范围
+        _SpecularSoftness("Specular Softness", Range(0.001,1)) = 0.1 //高光边界柔和度（0.001≈硬切，越大边缘越虚）
 
         [Header(Ramp)]
         [Toggle(_USE_RAMPMAP)] _UseRampMap("Use RampMap" , Range(0,1)) = 1
@@ -90,6 +91,7 @@ Shader "ZZZ/ZZZ_body"
                 float4 _SpecularMap_ST;
                 half _SpecularPower;
                 half _SpecularRegion;
+                half _SpecularSoftness;
 
                 // Ramp色阶阴影
                 half _ShadowThreshold;
@@ -317,11 +319,11 @@ Shader "ZZZ/ZZZ_body"
                         color = lerp(color, color * rampColor, _ShadowIntensity);
                     #endif
 
-                    // 高光（大于0.3使用）
-                    if(halfLambert > 1- _SpecularRegion)
-                    {
-                        color.rgb = lerp(color.rgb,lerp(color.rgb , color.rgb+specularMap.a , halfLambert),_SpecularPower);
-                    }
+                    // 高光（smoothstep 软化边界，替代硬 if；_SpecularSoftness 越大边缘越虚）
+                    half specThreshold = 1.0 - _SpecularRegion;
+                    half specWeight = smoothstep(specThreshold - _SpecularSoftness, specThreshold + _SpecularSoftness, halfLambert);
+                    half3 specInner = lerp(color.rgb, color.rgb + specularMap.a, halfLambert);
+                    color.rgb = lerp(color.rgb, specInner, specWeight * _SpecularPower);
 
                     // ===== 调试可视化（_DebugMode 下拉，0=正常渲染）=====
                     // 噪声预览与描边 Pass 同一采样坐标（模型空间 XY 投影），所见即所得

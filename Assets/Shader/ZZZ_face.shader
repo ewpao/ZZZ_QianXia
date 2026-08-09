@@ -169,11 +169,11 @@ Shader "ZZZ/ZZZ_face"
                     // ===== 调试可视化（_DebugMode 下拉，0=正常渲染）=====
                     // 噪声预览与描边 Pass 同一采样坐标（模型空间 XY 投影），所见即所得
                     if (_DebugMode == 1) // 顶点色
-                        return half4(vertexcolor, 1.0);
+                        return half4(vertexcolor.ggg, 1.0);
                     if (_DebugMode == 2) // 观察空间法线
                     {
                         half3 normalVS = TransformWorldToViewDir(i.normalWS, true);
-                        return half4(abs(normalVS), 1);
+                        return half4(abs(i.normalWS), 1);
                     }
                     if (_DebugMode == 3) // uv1 中烘焙的平滑法线
                         return half4(i.uv1, 1);

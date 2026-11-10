@@ -1,7 +1,7 @@
 # ZZZ 角色 Toon Shader —— 设计思路总结
 
 > 本文件归纳项目内手写 URP 卡通着色器的整体设计，便于复习与接手。
-> 核心着色器：`Assets/Shader/ZZZ_body.shader`、`Assets/Shader/ZZZ_face.shader`
+> 核心着色器：`Assets/Shader/ZZZ_body.shader`、`Assets/Shader/ZZZ_face.shader`、`Assets/Shader/ZZZ_face_sdf.shader`（脸部皮肤专用，阴影子系统与 Body 一致）
 > 开发/测试着色器：`Assets/Scenes/Outline_Test.shader`、`Assets/Scenes/Tool_Test.shader`
 > 工具着色器（烘焙）：`Assets/Editor/BakeSmoothNormalObjectSpace.shader`
 > 配套工具：`Assets/Editor/RampEditorWindow.cs`（Ramp 生成）、`Assets/Editor/SmoothNormalToUV2.cs`（平滑法线写入）、`Assets/Editor/NormalSmoothingTool.cs`（平滑法线烘焙贴图）、`Assets/Scripts/huidu.cs`（顶点色查看）
@@ -26,7 +26,7 @@
 | 管线 | URP (Universal Render Pipeline) | 手写 `HLSLINCLUDE` 公共块，仅包含 `Core / Lighting / DeclareDepthTexture` 三个库 |
 | 着色器 | 纯手写 HLSL（非 ShaderGraph） | 精细控制 Ramp / 屏幕深度 Rim / 描边膨胀 |
 | Pass 数 | **2 Pass**：Forward + Outline | 主色与描边分离，描边用 `Cull Front` 背面膨胀法 |
-| 着色器拆分 | `ZZZ_body` / `ZZZ_face` 分离 | 身体走完整管线（Ramp/Rim/Specular/AO），脸部走简化管线（仅 Half-Lambert³ + 描边） |
+| 着色器拆分 | `ZZZ_body` / `ZZZ_face` / `ZZZ_face_sdf` 三份 | 身体走完整管线（Ramp/Rim/Specular/AO）；脸部非皮肤件（眼/嘴/眉等）走简化管线（仅 Half-Lambert³ + 描边）；脸部皮肤 `ZZZ_face_sdf` 复用 **Body 的阴影管线**（Half-Lambert² + AO + Ramp），但不做 Specular / Rim / 调色 |
 | SRP 兼容 | 所有材质参数包进 `CBUFFER_START(UnityPerMaterial)` | 保证 SRP Batcher 合批，避免逐材质 SetPass 开销 |
 | 关键字 | `_USE_RAMPMAP`、`_USE_OUTLINE_NOISE` 用 `shader_feature_local` | 变体按需编译；关闭 Ramp / 关闭噪声时零成本 |
 
@@ -67,6 +67,10 @@ halfLambert      = halfLambert * halfLambert;     // Body：平方（^2），增
 ```
 
 **设计要点**：幂次越高，明暗交界越锐利、中间调越少，越接近赛璐璐。Body 用 ^2 保留皮肤过渡，Face 用 ^3 让面部阴影更干净（面部通常不做 Ramp，靠 ^3 的硬过渡 + 单独描边区分）。
+
+> **`ZZZ_face_sdf`（脸部皮肤，材质 `face/0._.mat`）例外**：它不沿用 `ZZZ_face` 的 ^3 简化管线。明暗来源是**面部 SDF 阈值判断**（见 §3.4），下游管线（AO、Ramp 阶调色）照搬 Body 的写法；把 `_USE_FACE_SDF` 关掉则完整退回 Body 的 N·L 管线（^2 Half-Lambert → AO 调制 → `(ambient + halfLambert) * 0.5` 重映射 → Ramp）。脸部材质因此暴露 `_AOMap` / `_RampMap` / `_RampID` / `_Shadow*` / `_FaceSDF` 等 Body 与 SDF 两套参数。
+>
+> 脸部用法：`_RampMap` 挂 `TEXTURES/getpifuramp.png`（2 行皮肤 Ramp，Point 采样）。`_RampID` 不挂贴图时为默认白色 → `GetrampV` 返回 v=0.3 → 恒定采第 0 行（按 `floor(0.3×2)=0` 落在 row 0，不会串行）；若挂上 `tex/rampID_fa.png`（绿/蓝两色遮罩，绿→v=0.5、蓝→v=0.3），2 行 Ramp 下的 v=0.5 恰在第 0/1 行交界，会随实现落到 row 1，需要多行 Ramp 才稳。`_AOMap` 脸部暂无专用贴图，保持默认白色 = 关 AO（行为同 Body 把 `_UseAOMap` 置 0）。
 
 ---
 
@@ -127,7 +131,31 @@ shadow       = lerp(shadow, 1,  step(0.95, shadow));     // 提亮亮部
 
 > 注意：`_UseAOMap` 是运行时 uniform（见 §1），不是 shader keyword，关掉只是把混合权重压到 0。
 
-### 3.4 Ramp 贴图生成器（工具）
+### 3.4 面部 SDF 阴影（`ZZZ_face_sdf` 专用）
+
+脸部若用 N·L 决定明暗，交界会随低模面片法线抖动（鼻梁被硬线劈开）。`ZZZ_face_sdf` 改用**面部 SDF 贴图 + 阈值比较**：SDF 只负责判断「这里算受光还是阴影」，**不参与任何颜色计算**。
+
+- **SDF 值语义**：`0` = 鼻梁/鼻尖（最早入影）~ `1` = 脸颊边缘（最晚入影）；贴图按**右侧光**单侧烘焙。
+- **导入设置**：线性（关 sRGB）+ Wrap = Clamp。当前挂在 `Assets/TEXTURES/wow.png`（材质的 `_FaceSDF`）。
+- **阈值公式**（不旋转 UV，只做比较）：
+
+```hlsl
+threshold = saturate((1 - FdotL) * 0.5 + UdotL * _FaceUpFactor + _FaceShadowOffset);
+mask      = smoothstep(threshold - softness, threshold + softness, sdf);  // 1=受光 0=阴影
+```
+
+正脸光 → `threshold = 0` → 全亮；正背光 → `threshold = 1` → 全暗。`_FaceUpFactor` 让顶光推高阈值（脸更易入影）、底光拉低；`_FaceShadowSoftness` 只是比较带宽（防锯齿），不是「用 SDF 做渐变」。
+
+- **镜像**：贴图按右侧光烘焙，`RdotL < 0`（光从角色左侧来）时翻转 `UV.x`，保证左右对称。
+- **头部三轴**：`_HeadForward` / `_HeadRight` 为模型空间轴（默认 +Z / +X），经物体矩阵转世界空间；上轴由 `faceUp = cross(faceForward, faceRight)` 推出。
+- **与 Body 的关系（重点）**：SDF **只替换 body 阴影管线里的那一个输入量 `halfLambert`**，下游逐行照搬 body——AO 调制 → `(ambient + halfLambert) * 0.5` 重映射 → 0.05/0.95 硬切 → `rampU = smoothstep(_ShadowThreshold ± _ShadowSoftness, halfLambert)` → `color = basecolor × light.color × shadow` → `lerp(color, color × rampColor, _ShadowIntensity)`，一个字符都没改。
+  - 为什么中间要做一次映射：body 的 `halfLambert = saturate(NdotL*0.5+0.5)²` 值域是 `[0.25, 1]`（半兰伯特把背光面抬到 `0.5²`），而 SDF 输出的是二值判断。把 0 直接喂进 body 的链子会得到 `shadow = 0` → 整块乘成全黑，所以把「受光 = 1 / 阴影 = 0.25」映射回 body 实际能取到的同一区间：`halfLambert = lerp(0.25, 1.0, faceMask)`。这样阴影端的压暗程度、AO 耦合、Ramp 阈值全部与 body 同源。
+- **面部阴影遮罩**（`_FaceShadowMask`，R 通道，可选）：**黑 = 映射为阴影**、白 = 保持原明暗、灰 = 部分强度，同样是拉向 body 的阴影下限：`halfLambert = lerp(0.25, halfLambert, mask)`。默认白图 = 无影响；`_USE_FACE_SHADOW_MASK` 关闭则整段采样被剔除。它作用在明暗输入上，SDF 与 N·L 两条分支共用同一处。
+- **亮面亮度**（`_FaceLitIntensity`，默认 1）：只作用于受光侧的乘算——权重取明暗输入在 body 值域 `[0.25, 1]` 内归一化后的值（SDF 模式下即 0/1），所以 `>1` 提亮亮面、`<1` 压暗亮面，**阴影侧完全不受影响**。默认 1 时与 body 无任何差异。
+- **调试**：`_DebugMode` 5 = SDF 采样值（含镜像后的 UV）、6 = 受光遮罩、7 = 遮罩贴图采样值，用来核对烘焙方向、镜像与遮罩是否符合约定。
+- **回退**：`_USE_FACE_SDF` 关闭时**只有 `halfLambert` 的赋值**换回 `saturate(NdotL * 0.5 + 0.5)²`，下游管线不变。
+
+### 3.5 Ramp 贴图生成器（工具）
 
 `Assets/Editor/RampEditorWindow.cs` 提供 `Tool/Ramp Generator` 菜单，用 `Mathf.SmoothStep` 在 `width ± softness` 区间做横向过渡，按 `Light/Shadow` 两色 `Lerp` 生成 `Assets/TEXTURES/ramp.png`。设计意图：让美术**不进 PS** 就能快速试不同阈值/软硬的 Ramp。
 
@@ -351,7 +379,8 @@ float applyNoiseContrast(float n, float c) { return sign(n) * pow(abs(n), 1.0 / 
 | `_RimIntensity` / `_RimColor` / `_RimWidth` / `_DepthThreshold` / `_FresnelMask` | F / C / F / F / F | 屏幕深度边缘光全套（见 §5） |
 | `_ColourModulation` / `_Saturation` | C / F | 校色调色（见 §7） |
 
-> Face 无 AO / Specular / Ramp / Rim 参数，仅 `_BaseMap` + 描边 + `_DebugMode`，走纯 Half-Lambert³ 光照。
+> `ZZZ_face` 无 AO / Specular / Ramp / Rim 参数，仅 `_BaseMap` + 描边 + `_DebugMode`，走纯 Half-Lambert³ 光照（眼睛/嘴/眉等 11 个脸部材质用它）。
+> `ZZZ_face_sdf`（脸部皮肤 `0._.mat`）则**共享上表的 AO 与 Ramp 全部参数**（`_AOMap`/`_AOIntensity`/`_UseAOMap`、`_RampMap`/`_RampID`/`_UseRampMap`、`_Shadow*`），另加面部 SDF 一套：`_FaceSDF` / `_UseFaceSDF`（keyword `_USE_FACE_SDF`）/ `_HeadForward` / `_HeadRight` / `_FaceUpFactor` / `_FaceShadowOffset` / `_FaceShadowSoftness` / `_FaceLitIntensity` / `_FaceShadowMask` / `_UseFaceShadowMask`（keyword `_USE_FACE_SHADOW_MASK`）（见 §3.4）。仍然没有 Specular / Rim / 调色。
 
 ---
 

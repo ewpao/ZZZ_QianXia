@@ -4,12 +4,14 @@ Shader "ZZZ/ZZZ_face"
     {
         [Header(Textures)]
         _BaseMap("Base Map" ,2D) = "white" {}
+        [Space(30)]
 
         [Header(Outline)]
         _OutlineWidth("Outline Width", Range(0, 10)) = 2.0 //描边宽度（像素级）
         _OutlineColor("Outline Color", Color) = (0, 0, 0, 1) //描边颜色
         _OutlineMaxDistance("Outline Max Distance", Range(0.1, 100)) = 10.0 //衰减起点(米)：该距离内保持满粗细，超出按距离衰减变细
         _OutlineZOffset("Outline Z Offset", Range(-1, 1)) = 0.0 //描边深度偏移：正值沉后(URP Reverse-Z)，负值前移
+        [Space(30)]
 
         [Header(Outline Noise)]
         [Toggle(_USE_OUTLINE_NOISE)] _UseOutlineNoise("Use Outline Noise", Range(0,1)) = 1 //描边噪声总开关（关闭后宽度均匀，且剔除噪声计算）
@@ -17,6 +19,21 @@ Shader "ZZZ/ZZZ_face"
         _OutlineNoiseStrength("Outline Noise Strength", Range(0, 1)) = 0.3 //噪声对粗细的影响强度（0=均匀，1=±100%）
         _OutlineNoiseAnimSpeed("Outline Noise Anim Speed", Range(0, 5)) = 0 //噪声流动速度（0=静态，沿对角线滚动采样坐标）
         _NoiseContrast("Noise Contrast", Range(0.5, 4)) = 1.0 //噪声对比度（>1 拉开黑白差距，<1 变柔和）
+        [Space(30)]
+
+        [Header(SDF)]
+        [Toggle(_USE_SDF)] _UseSDF("Use SDF", Range(0,1)) = 0 //sdf开关
+        _SDFMap("SDF Map", 2D) = "white"{}
+
+        _Yuzhi("t",range(0,1)) = 0.5
+
+        _FaceLightColor("Face Light Color", color) = (0.1,0.1,0.1,0.1)
+        _FaceDarkColor("Face Dark Color", color) = (1,1,1,1)
+
+        _FaceForwardOS("Forward Direction", vector) = (0,0,1,0)
+        _FaceRightOS("Right Direction", vector) = (1,0,0,0)
+        _FaceUpOS("Up Direction", vector) = (0,1,0,0)
+
 
         [Header(Debug)]
         [Enum(Off,0,Vertex Color,1,View Normal,2,Smooth Normal,3,Noise,4)] _DebugMode("Debug Mode", Float) = 0 //调试可视化下拉：0=正常渲染，1=顶点色，2=观察空间法线，3=平滑法线(uv1)，4=柏林噪声预览
@@ -34,10 +51,16 @@ Shader "ZZZ/ZZZ_face"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl" // 光照库
 
             #pragma shader_feature_local _USE_OUTLINE_NOISE
+            #pragma shader_feature_local _USE_SDF
+
+            // 纹理声明
+            TEXTURE2D(_BaseMap);        SAMPLER(sampler_BaseMap);
+            TEXTURE2D(_SDFMap);         SAMPLER(sampler_SDFMap);
 
             // 材质属性常量缓冲区（所有 Pass 共用，保证 SRP Batcher 兼容）
             CBUFFER_START(UnityPerMaterial)
                 float4 _BaseMap_ST;
+                float4 _SDFMap_ST;
 
                 half _OutlineWidth;
                 half4 _OutlineColor;
@@ -49,6 +72,14 @@ Shader "ZZZ/ZZZ_face"
                 half _OutlineNoiseStrength;
                 half _OutlineNoiseAnimSpeed;
                 half _NoiseContrast;
+
+                // 
+                float _Yuzhi;
+                float3 _FaceLightColor;
+                float3 _FaceDarkColor;
+                float4 _FaceForwardOS;
+                float4 _FaceRightOS;
+                float4 _FaceUpOS;
 
                 // 调试
                 half _DebugMode;
@@ -83,6 +114,57 @@ Shader "ZZZ/ZZZ_face"
                 return sign(n) * pow(abs(n), 1.0 / c);
             }
 
+            float CalculateSignedFaceAngle(float lightRight, float lightForward)
+            {
+                float shorter = min(abs(lightRight), abs(lightForward));
+                float longer = max(abs(lightRight), abs(lightForward));
+                float ratio = shorter / max(longer, 1e-8);
+                float ratioSquared = ratio * ratio;
+
+                // 原程序的多项式系数：用小角度近似还原 atan2。
+                float polynomial = ratioSquared * 0.0208350997 - 0.0851330012;
+                polynomial = ratioSquared * polynomial + 0.180141002;
+                polynomial = ratioSquared * polynomial - 0.330299497;
+                polynomial = ratioSquared * polynomial + 0.999866009;
+                float smallAngle = ratio * polynomial;
+
+                float angle = smallAngle;
+                if (abs(lightForward) < abs(lightRight))
+                    angle += 1.57079637 - 2.0 * smallAngle;
+                if (lightForward < 0.0)
+                    angle -= 3.141593;
+                if (min(-lightRight, lightForward) < 0.0 &&
+                    max(-lightRight, lightForward) >= 0.0)
+                    angle = -angle;
+                return angle;
+            }
+            
+            float CalculateFaceLightAngle()
+            {
+                float3 faceForwardWS = normalize(TransformObjectToWorldDir(_FaceForwardOS.xyz));
+                float3 faceRightWS = normalize(TransformObjectToWorldDir(_FaceRightOS.xyz));
+                float3 faceUpWS = normalize(TransformObjectToWorldDir(_FaceUpOS.xyz));
+
+                float3 sdfuselight = normalize(GetMainLight().direction);
+
+                float axisBias = abs(dot(sdfuselight,faceUpWS) * 0.5); // 轴向偏置，0.5是系数
+                sdfuselight.xz += faceForwardWS.xz * axisBias;
+
+                sdfuselight = normalize(sdfuselight);
+
+                sdfuselight.y = 1e-5;
+                sdfuselight = normalize(sdfuselight);
+
+                // 获得投影
+                float3 lightForward = dot(sdfuselight,faceForwardWS);
+                float3 lightRight = -dot(sdfuselight,faceRightWS);
+                
+                float angleRadians = CalculateSignedFaceAngle(lightRight,lightForward); //得到-PI到PI
+
+                return angleRadians * 0.318309873; //约等于除以PI，转为-1到1
+            }
+
+
         ENDHLSL
 
         pass
@@ -98,10 +180,6 @@ Shader "ZZZ/ZZZ_face"
 
                 #pragma vertex vert
                 #pragma fragment frag
-
-                // 纹理声明
-                TEXTURE2D(_BaseMap);
-                SAMPLER(sampler_BaseMap);
 
                 struct Attributes
                 {
@@ -160,8 +238,25 @@ Shader "ZZZ/ZZZ_face"
                     half halfLambert = saturate(NdotL * 0.5 + 0.5);
                     halfLambert = halfLambert * halfLambert * halfLambert;
 
-                    // ===== 最终颜色 = 漫反射 + 高光贴图 =====
-                    half4 color = half4(basecolor.rgb * light.color * halfLambert, basecolor.a);
+                    // ===== SDF（面部阴影遮罩）=====
+                    // 默认白色 = 不改变光照；关键字 _USE_SDF 关闭时整块被剔除
+                    #if defined(_USE_SDF)
+                        half3 sdfcolor = _FaceLightColor;
+
+                        float threshold = CalculateFaceLightAngle(); 
+                        float2 mirroredUV = float2((step(threshold,0) ? i.uv0.x : 1-i.uv0.x), i.uv0.y);
+                        threshold = abs(threshold);
+
+                        half sdfValue = SAMPLE_TEXTURE2D(_SDFMap, sampler_SDFMap, mirroredUV).r;
+                        half sdfMask = step(sdfValue,threshold);
+
+                        sdfcolor = lerp(_FaceLightColor, _FaceDarkColor, sdfMask);
+
+                        half4 color = half4(basecolor.rgb * light.color  * sdfcolor, basecolor.a);                    
+                    #else
+                        // ===== 最终颜色 = 漫反射 + 高光贴图 =====
+                        half4 color = half4(basecolor.rgb * light.color * halfLambert, basecolor.a);
+                    #endif
 
                     // 采样顶点色
                     half3 vertexcolor = i.color.rgb;

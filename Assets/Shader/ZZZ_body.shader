@@ -4,17 +4,34 @@ Shader "ZZZ/ZZZ_body"
     {
         [Header(Textures)]
         _BaseMap("Base Map" ,2D) = "white" {} //基础贴图采样
+        // Optional surface controls. Existing opaque materials retain their original defaults.
+        [HideInInspector] _SrcBlend("Source Blend", Float) = 1
+        [HideInInspector] _DstBlend("Destination Blend", Float) = 0
+        [HideInInspector] _ZWrite("Depth Write", Float) = 1
+        [HideInInspector] _Opacity("Opacity", Range(0,1)) = 1
+        [HideInInspector] _AlphaClip("Alpha Clip", Float) = 0
+        [HideInInspector] _Cutoff("Alpha Cutoff", Range(0,1)) = 0.33
+        _LightContrast("Light Contrast", Range(0.01,3)) = 1
+        [Space(30)]
 
         [Header(AO)]
         [Toggle(_USE_AO_MAP)] _UseAOMap("Use AO Map" , Range(0,1)) = 1
         _AOMap("AO Map" ,2D) = "white" {} //AO贴图采样
         _AOIntensity("AO Intensity", Range(0,1)) = 1.0 //AO强度
+        [Space(30)]
 
         [Header(Specular)]
         _SpecularMap("Specular Map" ,2D) = "black"{} //高光贴图采样
         _SpecularPower("Specular Power", Range(0,1)) = 0.25 //高光强度
         _SpecularRegion("Specular Region", Range(0,1)) = 0.3 //高光范围
         _SpecularSoftness("Specular Softness", Range(0.001,1)) = 0.1 //高光边界柔和度（0.001≈硬切，越大边缘越虚）
+        [Space(30)]
+
+        [Header(Normal)]
+        [Toggle(_USE_NORMAL_MAP)] _UseNormalMap("Use Normal Map", Float) = 1
+        [Normal] _NormalMap("Normal Map", 2D) = "bump"{}
+        _NormalMapIntensity("Normal Map Intensity", Range(0,1)) = 1 
+        [Space(30)]
 
         [Header(Ramp)]
         [Toggle(_USE_RAMPMAP)] _UseRampMap("Use RampMap" , Range(0,1)) = 1
@@ -23,6 +40,7 @@ Shader "ZZZ/ZZZ_body"
         _ShadowThreshold("Shadow Threshold",Range(0,1)) = 0.3 //阴影阈值（边缘位置）
         _ShadowSoftness("Shadow Softness" ,Range(0.001,1)) = 0.001 //阴影边界柔和度（调节阴影软硬）
         _ShadowIntensity("Shadow Intensity" , Range(0,1)) = 1 //阴影强度
+        [Space(30)]
 
         [Header(Rim)]
         _RimIntensity("Rim Intensity" ,Range(0,1)) = 1
@@ -30,17 +48,19 @@ Shader "ZZZ/ZZZ_body"
         _RimWidth ("Rim Width (View Space)", Range(0.001, 0.1)) = 0.01
         _DepthThreshold ("Depth Threshold", Range(0.0001, 0.1)) = 0.01
         _FresnelMask ("Fresnel Mask", Range(0.0, 1.0)) = 0.5
-
+        [Space(30)]
 
         [Header(Colour Modulation)]
         _ColourModulation("Colour Modulation" ,Color) = (1,1,1,1)//调色
         _Saturation("Saturation", Range(0,2)) = 1.0//饱和度调节
+        [Space(30)]
 
         [Header(Outline)]
         _OutlineWidth("Outline Width", Range(0, 10)) = 2.0 //描边宽度（像素级）
         _OutlineColor("Outline Color", Color) = (0, 0, 0, 1) //描边颜色
         _OutlineMaxDistance("Outline Max Distance", Range(0.1, 100)) = 5 //衰减起点(米)：该距离内保持满粗细，超出按距离衰减变细
         _OutlineZOffset("Outline Z Offset", Range(-1, 1)) = 0.0 //描边深度偏移：正值沉后(URP Reverse-Z)，负值前移
+        [Space(30)]
 
         [Header(Outline Noise)]
         [Toggle(_USE_OUTLINE_NOISE)] _UseOutlineNoise("Use Outline Noise", Range(0,1)) = 1 //描边噪声总开关（关闭后宽度均匀，且剔除噪声计算）
@@ -48,6 +68,7 @@ Shader "ZZZ/ZZZ_body"
         _OutlineNoiseStrength("Outline Noise Strength", Range(0, 1)) = 0.3 //噪声对粗细的影响强度（0=均匀，1=±100%）
         _OutlineNoiseAnimSpeed("Outline Noise Anim Speed", Range(0, 5)) = 0 //噪声流动速度（0=静态，沿对角线滚动采样坐标）
         _NoiseContrast("Noise Contrast", Range(0.5, 4)) = 1.0 //噪声对比度（>1 拉开黑白差距，<1 变柔和）
+        [Space(30)]
 
         [Header(Debug)]
         [Enum(Off,0,Vertex Color,1,View Normal,2,Smooth Normal,3,Noise,4)] _DebugMode("Debug Mode", Float) = 0 //调试可视化下拉：0=正常渲染，1=顶点色，2=观察空间法线，3=平滑法线(uv1)，4=柏林噪声预览
@@ -74,6 +95,7 @@ Shader "ZZZ/ZZZ_body"
             TEXTURE2D(_BaseMap);            SAMPLER(sampler_BaseMap);
             TEXTURE2D(_AOMap);              SAMPLER(sampler_AOMap);
             TEXTURE2D(_SpecularMap);        SAMPLER(sampler_SpecularMap);
+            TEXTURE2D(_NormalMap);          SAMPLER(sampler_NormalMap);
             TEXTURE2D(_RampMap);            SAMPLER(sampler_RampMap);
             TEXTURE2D(_RampID);             SAMPLER(sampler_RampID);
 
@@ -81,6 +103,10 @@ Shader "ZZZ/ZZZ_body"
             CBUFFER_START(UnityPerMaterial)
                 // 基础纹理
                 float4 _BaseMap_ST;
+                half _Opacity;
+                half _AlphaClip;
+                half _Cutoff;
+                half _LightContrast;
 
                 // AO
                 float4 _AOMap_ST;
@@ -92,6 +118,11 @@ Shader "ZZZ/ZZZ_body"
                 half _SpecularPower;
                 half _SpecularRegion;
                 half _SpecularSoftness;
+
+                // NormalMap
+                float4 _NormalMap_ST;
+                half _UseNormalMap;
+                half _NormalMapIntensity;
 
                 // Ramp色阶阴影
                 half _ShadowThreshold;
@@ -177,6 +208,7 @@ Shader "ZZZ/ZZZ_body"
                 float2 uv0        : TEXCOORD0;  // 主纹理 UV
                 float3 uv1        : TEXCOORD1;  // 平滑法线
                 float3 normalOS   : NORMAL;     // 模型空间法线
+                float4 tangentOS  : TANGENT;    // 模型空间切线
                 float4 color      : COLOR;      // 顶点颜色
             };
 
@@ -185,12 +217,14 @@ Shader "ZZZ/ZZZ_body"
                 float4 positionCS   : SV_POSITION; // 裁剪空间坐标
                 float2 uv0          : TEXCOORD0;   // 主纹理 UV
                 float3 normalWS     : TEXCOORD1;   // 世界空间法线
-                float3 normalVS     : TEXCOORD2;   // 观察空间法线
-                float3 positionVS   : TEXCOORD3;   // 观察空间坐标
-                float4 positionNDC  : TEXCOORD4;   // NDC空间坐标
-                float3 positionWS   : TEXCOORD5;   // 世界空间坐标
-                float3 positionOS   : TEXCOORD6;   // 模型空间坐标（噪声调试预览用，与描边 Pass 同源）
-                float3 uv1          : TEXCOORD7;   // 平滑法线
+                float3 tangentWS     : TEXCOORD2;   // 世界空间切线
+                float3 normalVS     : TEXCOORD3;   // 观察空间法线
+                float3 positionVS   : TEXCOORD4;   // 观察空间坐标
+                float3 positionWS   : TEXCOORD6;   // 世界空间坐标
+                float3 positionOS   : TEXCOORD7;   // 模型空间坐标（噪声调试预览用，与描边 Pass 同源）
+                float3 uv1          : TEXCOORD8;   // 平滑法线
+                float3 bitangentWS   : TEXCOORD9;
+                float2 normalUV      : TEXCOORD5;
                 float4 color        : COLOR;       // 顶点颜色
             };
 
@@ -206,11 +240,14 @@ Shader "ZZZ/ZZZ_body"
             }
 
             Cull off //背面剔除关闭
+            Blend [_SrcBlend] [_DstBlend]
+            ZWrite [_ZWrite]
 
             HLSLPROGRAM
 
                 #pragma vertex vert
                 #pragma fragment frag
+                #pragma shader_feature_local _USE_NORMAL_MAP
 
                 Varyings vert(Attributes i)
                 {
@@ -219,21 +256,27 @@ Shader "ZZZ/ZZZ_body"
                     // 空间转换函数
                     VertexPositionInputs posInputs = GetVertexPositionInputs(i.positionOS.xyz);
                     VertexNormalInputs normalInput = GetVertexNormalInputs(i.normalOS);//转换法线空间
+                    VertexNormalInputs tbn = GetVertexNormalInputs(i.normalOS, i.tangentOS);//转换切线空间
 
                     // 空间转换
                     o.positionCS = posInputs.positionCS;
                     o.positionVS = posInputs.positionVS;
-                    o.positionNDC = posInputs.positionNDC;
                     o.positionWS = posInputs.positionWS;
                     o.positionOS = i.positionOS.xyz;
 
                     // UV 传递（应用 Tiling/Offset）
                     o.uv0 = TRANSFORM_TEX(i.uv0, _BaseMap);
+                    o.normalUV = TRANSFORM_TEX(i.uv0, _NormalMap);
                     o.uv1 = i.uv1;
 
                     // normal
                     o.normalWS = normalInput.normalWS;//将世界坐标法线传递给输出变量
                     o.normalVS = TransformWorldToViewDir(normalInput.normalWS, true);
+
+                    //TBN
+                    o.normalWS = tbn.normalWS;
+                    o.tangentWS = tbn.tangentWS;
+                    o.bitangentWS = tbn.bitangentWS;
 
                     // 顶点颜色
                     o.color = i.color;
@@ -251,13 +294,22 @@ Shader "ZZZ/ZZZ_body"
 
                     // Lambert Diffuse
                     half4 basecolor    = SAMPLE_TEXTURE2D(_BaseMap,    sampler_BaseMap,    i.uv0);
+                    basecolor.a *= _Opacity;
+                    if (_AlphaClip > 0.5) clip(basecolor.a - _Cutoff);
                     half4 specularMap  = SAMPLE_TEXTURE2D(_SpecularMap, sampler_SpecularMap, i.uv0);
-
+                    half4 normalMap    = SAMPLE_TEXTURE2D(_NormalMap, sampler_NormalMap, i.normalUV);
+                    // normalmap
                     half3 N = normalize(i.normalWS);
+                    #if defined(_USE_NORMAL_MAP)
+                        half3 normalTS = UnpackNormalScale(normalMap, _NormalMapIntensity);
+                        float3x3 TBN = float3x3(i.tangentWS, i.bitangentWS, i.normalWS);
+                        N = normalize(mul(normalTS, TBN));
+                    #endif
+                    
                     half3 L = normalize(light.direction);
                     half NdotL = saturate(dot(N, L));
                     half halfLambert = saturate(NdotL * 0.5 + 0.5); //半lambert
-                    halfLambert = halfLambert * halfLambert;// * halfLambert; //增加效果
+                    halfLambert = pow(halfLambert,_LightContrast); //增加效果
 
                     // AO 强度调节：1 = 无AO效果，ao值越小遮蔽越强
                     half ao = SAMPLE_TEXTURE2D(_AOMap,sampler_AOMap,i.uv0);

@@ -4,6 +4,7 @@ Shader "ZZZ/ZZZ_body"
     {
         [Header(Textures)]
         _BaseMap("Base Map" ,2D) = "white" {} //基础贴图采样
+        _MixColor("Mix Color", Color) = (1,1,1,1)
         // Optional surface controls. Existing opaque materials retain their original defaults.
         [HideInInspector] _SrcBlend("Source Blend", Float) = 1
         [HideInInspector] _DstBlend("Destination Blend", Float) = 0
@@ -11,7 +12,11 @@ Shader "ZZZ/ZZZ_body"
         [HideInInspector] _Opacity("Opacity", Range(0,1)) = 1
         [HideInInspector] _AlphaClip("Alpha Clip", Float) = 0
         [HideInInspector] _Cutoff("Alpha Cutoff", Range(0,1)) = 0.33
-        _LightContrast("Light Contrast", Range(0.01,3)) = 1
+        [Space(30)]
+
+        [Header(Material Regions)]
+        [Toggle(_USE_MATERIAL_REGIONS)] _UseMaterialRegions("Enable Material Regions", Float) = 0
+        [NoScaleOffset] _RampID("Region ID (Red Skin - Blue Cloth)", 2D) = "black" {}
         [Space(30)]
 
         [Header(AO)]
@@ -29,17 +34,73 @@ Shader "ZZZ/ZZZ_body"
 
         [Header(Normal)]
         [Toggle(_USE_NORMAL_MAP)] _UseNormalMap("Use Normal Map", Float) = 1
-        [Normal] _NormalMap("Normal Map", 2D) = "bump"{}
-        _NormalMapIntensity("Normal Map Intensity", Range(0,1)) = 1 
+        _NormalMap("Normal Map (RG Normal, B Bias)", 2D) = "gray"{}
+        _NormalMapIntensity("RG Normal Strength", Range(0, 2)) = 1
+        _BlueBiasStrength("B Bias Strength", Range(0, 3)) = 2.0
         [Space(30)]
 
-        [Header(Ramp)]
-        [Toggle(_USE_RAMPMAP)] _UseRampMap("Use RampMap" , Range(0,1)) = 1
-        _RampMap("Ramp Map" ,2D) = "black"{}
-        _RampID("RampID" , 2D) = "white"{}
-        _ShadowThreshold("Shadow Threshold",Range(0,1)) = 0.3 //阴影阈值（边缘位置）
-        _ShadowSoftness("Shadow Softness" ,Range(0.001,1)) = 0.001 //阴影边界柔和度（调节阴影软硬）
-        _ShadowIntensity("Shadow Intensity" , Range(0,1)) = 1 //阴影强度
+        [Header(Band Colors)]
+        _DeepColor("1 Deep Shadow", Color) = (0.20, 0.25, 0.43, 1)
+        _ShadowColor("2 Shadow", Color) = (0.42, 0.46, 0.65, 1)
+        _SoftShadowColor("3 Soft Shadow", Color) = (0.64, 0.65, 0.79, 1)
+        _MidColor("4 Midtone", Color) = (0.83, 0.83, 0.92, 1)
+        _WarmColor("5 Warm Transition", Color) = (1.0, 0.78, 0.63, 1)
+        _LightColor("6 Light", Color) = (0.98, 0.93, 0.86, 1)
+        _BrightColor("7 Bright Light", Color) = (1, 1, 1, 1)
+        [Space(10)]
+
+        [Header(Transition Centers and Full Widths)]
+        _Center1("1 to 2 Center", Range(-1, 1)) = -0.72
+        _Width1("1 to 2 Width", Range(0, 1)) = 0.30
+        _Center2("2 to 3 Center", Range(-1, 1)) = -0.36
+        _Width2("2 to 3 Width", Range(0, 1)) = 0.06
+        _Center3("3 to 4 Center", Range(-1, 1)) = -0.04
+        _Width3("3 to 4 Width", Range(0, 1)) = 0.28
+        _Center4("4 to 5 Center", Range(-1, 1)) = 0.26
+        _Width4("4 to 5 Width", Range(0, 1)) = 0.09
+        _Center5("5 to 6 Center", Range(-1, 1)) = 0.45
+        _Width5("5 to 6 Width", Range(0, 1)) = 0.06
+        _Center6("6 to 7 Center", Range(-1, 1)) = 0.76
+        _Width6("6 to 7 Width", Range(0, 1)) = 0.32
+        [Space(10)]
+
+        [Header(Lighting)]
+        _DirectStrength("Main Light Strength", Range(0, 2)) = 1.0
+        _AmbientStrength("Ambient Strength", Range(0, 1)) = 0.15
+        _CastShadowStrength("Cast Shadow Influence", Range(0, 1)) = 0.0
+        _CastShadowLimit("Occluded Lighting Coordinate", Range(-1, 1)) = -0.36
+        [Space(30)]
+
+        [Header(Cloth Band Colors)]
+        _ClothDeepColor("Cloth 1 Deep Shadow", Color) = (0.8235294, 0.8235294, 0.8235294, 1)
+        _ClothShadowColor("Cloth 2 Shadow", Color) = (0.8207547, 0.8207547, 0.8207547, 1)
+        _ClothSoftShadowColor("Cloth 3 Soft Shadow", Color) = (0.8509804, 0.8509804, 0.8509804, 1)
+        _ClothMidColor("Cloth 4 Midtone", Color) = (0.8490566, 0.8490566, 0.8490566, 1)
+        _ClothWarmColor("Cloth 5 Warm Transition", Color) = (1, 0.97990155, 0.9669811, 1)
+        _ClothLightColor("Cloth 6 Light", Color) = (1, 1, 1, 1)
+        _ClothBrightColor("Cloth 7 Bright Light", Color) = (1, 1, 1, 1)
+        [Space(10)]
+
+        [Header(Cloth Transition Centers and Full Widths)]
+        _ClothCenter1("Cloth 1 to 2 Center", Range(-1, 1)) = -0.869
+        _ClothWidth1("Cloth 1 to 2 Width", Range(0, 1)) = 0
+        _ClothCenter2("Cloth 2 to 3 Center", Range(-1, 1)) = -0.479
+        _ClothWidth2("Cloth 2 to 3 Width", Range(0, 1)) = 0.078
+        _ClothCenter3("Cloth 3 to 4 Center", Range(-1, 1)) = -0.04
+        _ClothWidth3("Cloth 3 to 4 Width", Range(0, 1)) = 0.574
+        _ClothCenter4("Cloth 4 to 5 Center", Range(-1, 1)) = 0.283
+        _ClothWidth4("Cloth 4 to 5 Width", Range(0, 1)) = 0.062
+        _ClothCenter5("Cloth 5 to 6 Center", Range(-1, 1)) = 0.346
+        _ClothWidth5("Cloth 5 to 6 Width", Range(0, 1)) = 0.122
+        _ClothCenter6("Cloth 6 to 7 Center", Range(-1, 1)) = 0.76
+        _ClothWidth6("Cloth 6 to 7 Width", Range(0, 1)) = 0.216
+        [Space(10)]
+
+        [Header(Cloth Lighting)]
+        _ClothDirectStrength("Cloth Main Light Strength", Range(0, 2)) = 1.05
+        _ClothAmbientStrength("Cloth Ambient Strength", Range(0, 1)) = 0.15
+        _ClothCastShadowStrength("Cloth Cast Shadow Influence", Range(0, 1)) = 0
+        _ClothCastShadowLimit("Cloth Occluded Lighting Coordinate", Range(-1, 1)) = -0.36
         [Space(30)]
 
         [Header(Rim)]
@@ -71,7 +132,7 @@ Shader "ZZZ/ZZZ_body"
         [Space(30)]
 
         [Header(Debug)]
-        [Enum(Off,0,Vertex Color,1,View Normal,2,Smooth Normal,3,Noise,4)] _DebugMode("Debug Mode", Float) = 0 //调试可视化下拉：0=正常渲染，1=顶点色，2=观察空间法线，3=平滑法线(uv1)，4=柏林噪声预览
+        [Enum(Off,0,Vertex Color,1,View Normal,2,Smooth Normal,3,Noise,4,Vertex Alpha,5,Base Map Alpha,6,Palette,7,LightingCoordinate,8)] _DebugMode("Debug Mode", Float) = 0 //调试可视化下拉：0=正常渲染，1=顶点色，2=观察空间法线，3=平滑法线(uv1)，4=柏林噪声预览，5=顶点色Alpha，6=基础贴图Alpha，7=7段色阶配色，8=色阶坐标x灰度
     }
     SubShader
     {
@@ -86,9 +147,8 @@ Shader "ZZZ/ZZZ_body"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl" // 核心库
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl" // 光照库
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl" // 深度纹理（声明 _CameraDepthTexture）
+            #include "ZZZ_User.hlsl"
 
-            #pragma shader_feature_local _USE_RAMPMAP
-            #pragma shader_feature_local _USE_RIM_LIGHT
             #pragma shader_feature_local _USE_OUTLINE_NOISE
 
             // 纹理声明
@@ -96,17 +156,15 @@ Shader "ZZZ/ZZZ_body"
             TEXTURE2D(_AOMap);              SAMPLER(sampler_AOMap);
             TEXTURE2D(_SpecularMap);        SAMPLER(sampler_SpecularMap);
             TEXTURE2D(_NormalMap);          SAMPLER(sampler_NormalMap);
-            TEXTURE2D(_RampMap);            SAMPLER(sampler_RampMap);
-            TEXTURE2D(_RampID);             SAMPLER(sampler_RampID);
 
             // 材质属性常量缓冲区
             CBUFFER_START(UnityPerMaterial)
                 // 基础纹理
                 float4 _BaseMap_ST;
+                float4 _MixColor;
                 half _Opacity;
                 half _AlphaClip;
                 half _Cutoff;
-                half _LightContrast;
 
                 // AO
                 float4 _AOMap_ST;
@@ -119,15 +177,46 @@ Shader "ZZZ/ZZZ_body"
                 half _SpecularRegion;
                 half _SpecularSoftness;
 
-                // NormalMap
+                // NormalMap 与 B 通道明暗偏置
                 float4 _NormalMap_ST;
                 half _UseNormalMap;
-                half _NormalMapIntensity;
+                float _NormalMapIntensity;
+                float _BlueBiasStrength;
 
-                // Ramp色阶阴影
-                half _ShadowThreshold;
-                half _ShadowSoftness;
-                half _ShadowIntensity;
+                // 7 段色阶颜色与 6 条交界 (MultiBandNormalShadow)
+                float4 _DeepColor;
+                float4 _ShadowColor;
+                float4 _SoftShadowColor;
+                float4 _MidColor;
+                float4 _WarmColor;
+                float4 _LightColor;
+                float4 _BrightColor;
+
+                float _Center1, _Center2, _Center3, _Center4, _Center5, _Center6;
+                float _Width1, _Width2, _Width3, _Width4, _Width5, _Width6;
+
+                float _DirectStrength;
+                float _AmbientStrength;
+                float _CastShadowStrength;
+                float _CastShadowLimit;
+
+                // 红色皮肤沿用上面的参数，衣服额外使用一套色阶和光照参数。
+                float _UseMaterialRegions;
+                float4 _ClothDeepColor;
+                float4 _ClothShadowColor;
+                float4 _ClothSoftShadowColor;
+                float4 _ClothMidColor;
+                float4 _ClothWarmColor;
+                float4 _ClothLightColor;
+                float4 _ClothBrightColor;
+
+                float _ClothCenter1, _ClothCenter2, _ClothCenter3, _ClothCenter4, _ClothCenter5, _ClothCenter6;
+                float _ClothWidth1, _ClothWidth2, _ClothWidth3, _ClothWidth4, _ClothWidth5, _ClothWidth6;
+
+                float _ClothDirectStrength;
+                float _ClothAmbientStrength;
+                float _ClothCastShadowStrength;
+                float _ClothCastShadowLimit;
 
                 // Rim边缘光
                 half _RimIntensity;
@@ -147,6 +236,7 @@ Shader "ZZZ/ZZZ_body"
                 float _OutlineZOffset;
 
                 // 描边噪声
+                half _UseOutlineNoise;
                 float4 _NoiseTillOffset;
                 half _OutlineNoiseStrength;
                 half _OutlineNoiseAnimSpeed;
@@ -155,15 +245,6 @@ Shader "ZZZ/ZZZ_body"
                 // 调试
                 half _DebugMode;
             CBUFFER_END
-
-            half GetrampV(half3 rampIDtu)
-            {
-                half v = 0.1;
-                v = lerp(v, 0.9, step(0.6, rampIDtu.r));
-                v = lerp(v, 0.5, step(0.6, rampIDtu.g));
-                v = lerp(v, 0.3, step(0.6, rampIDtu.b));
-                return v;
-            }
 
             float4 TransformHClipToViewPortPos(float4 positionCS)
             {
@@ -217,14 +298,13 @@ Shader "ZZZ/ZZZ_body"
                 float4 positionCS   : SV_POSITION; // 裁剪空间坐标
                 float2 uv0          : TEXCOORD0;   // 主纹理 UV
                 float3 normalWS     : TEXCOORD1;   // 世界空间法线
-                float3 tangentWS     : TEXCOORD2;   // 世界空间切线
+                float4 tangentWS    : TEXCOORD2;   // 世界空间切线 (xyz) + 手性符号 (w)
                 float3 normalVS     : TEXCOORD3;   // 观察空间法线
                 float3 positionVS   : TEXCOORD4;   // 观察空间坐标
+                float4 normalAndRampUV : TEXCOORD5; // xy: 法线贴图 UV，zw: ID 图的原始 UV0
                 float3 positionWS   : TEXCOORD6;   // 世界空间坐标
                 float3 positionOS   : TEXCOORD7;   // 模型空间坐标（噪声调试预览用，与描边 Pass 同源）
                 float3 uv1          : TEXCOORD8;   // 平滑法线
-                float3 bitangentWS   : TEXCOORD9;
-                float2 normalUV      : TEXCOORD5;
                 float4 color        : COLOR;       // 顶点颜色
             };
 
@@ -248,6 +328,11 @@ Shader "ZZZ/ZZZ_body"
                 #pragma vertex vert
                 #pragma fragment frag
                 #pragma shader_feature_local _USE_NORMAL_MAP
+                #pragma shader_feature_local_fragment _USE_MATERIAL_REGIONS
+                #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE _MAIN_LIGHT_SHADOWS_SCREEN
+                #pragma multi_compile_fragment _ _SHADOWS_SOFT
+
+                TEXTURE2D(_RampID); SAMPLER(sampler_RampID);
 
                 Varyings vert(Attributes i)
                 {
@@ -255,8 +340,7 @@ Shader "ZZZ/ZZZ_body"
 
                     // 空间转换函数
                     VertexPositionInputs posInputs = GetVertexPositionInputs(i.positionOS.xyz);
-                    VertexNormalInputs normalInput = GetVertexNormalInputs(i.normalOS);//转换法线空间
-                    VertexNormalInputs tbn = GetVertexNormalInputs(i.normalOS, i.tangentOS);//转换切线空间
+                    VertexNormalInputs tbn = GetVertexNormalInputs(i.normalOS, i.tangentOS);
 
                     // 空间转换
                     o.positionCS = posInputs.positionCS;
@@ -266,17 +350,13 @@ Shader "ZZZ/ZZZ_body"
 
                     // UV 传递（应用 Tiling/Offset）
                     o.uv0 = TRANSFORM_TEX(i.uv0, _BaseMap);
-                    o.normalUV = TRANSFORM_TEX(i.uv0, _NormalMap);
+                    o.normalAndRampUV = float4(TRANSFORM_TEX(i.uv0, _NormalMap), i.uv0);
                     o.uv1 = i.uv1;
 
-                    // normal
-                    o.normalWS = normalInput.normalWS;//将世界坐标法线传递给输出变量
-                    o.normalVS = TransformWorldToViewDir(normalInput.normalWS, true);
-
-                    //TBN
+                    // 法线与切线（tangentWS.w 携带手性符号，匹配 DecodePackedNormalWS）
                     o.normalWS = tbn.normalWS;
-                    o.tangentWS = tbn.tangentWS;
-                    o.bitangentWS = tbn.bitangentWS;
+                    o.tangentWS = float4(tbn.tangentWS, i.tangentOS.w * GetOddNegativeScale());
+                    o.normalVS = TransformWorldToViewDir(tbn.normalWS, true);
 
                     // 顶点颜色
                     o.color = i.color;
@@ -284,46 +364,71 @@ Shader "ZZZ/ZZZ_body"
                     return o;
                 }
 
-                half4 frag(Varyings i) : SV_TARGET
+                half4 frag(Varyings i, FRONT_FACE_TYPE cullFace : FRONT_FACE_SEMANTIC) : SV_TARGET
                 {
-                    // 采样光源
-                    Light light = GetMainLight();
+                    // ① 采样 URP 主光（含实时投影，兼容 Cascade / Screen Space Shadows）
+                    VertexPositionInputs posInputs = (VertexPositionInputs)0;
+                    posInputs.positionWS = i.positionWS;
+                    posInputs.positionCS = TransformWorldToHClip(i.positionWS);
+                    Light light = GetMainLight(GetShadowCoord(posInputs));
+                    float3 L = normalize(light.direction);
 
-                    // 采样顶点色
-                    half3 vertexcolor = i.color.rgb;
-
-                    // Lambert Diffuse
-                    half4 basecolor    = SAMPLE_TEXTURE2D(_BaseMap,    sampler_BaseMap,    i.uv0);
+                    // 采样顶点色与基础贴图
+                    half4 vertexcolor = i.color;
+                    half4 basecolor   = SAMPLE_TEXTURE2D(_BaseMap,     sampler_BaseMap,     i.uv0);
+                    basecolor *= _MixColor;
                     basecolor.a *= _Opacity;
                     if (_AlphaClip > 0.5) clip(basecolor.a - _Cutoff);
-                    half4 specularMap  = SAMPLE_TEXTURE2D(_SpecularMap, sampler_SpecularMap, i.uv0);
-                    half4 normalMap    = SAMPLE_TEXTURE2D(_NormalMap, sampler_NormalMap, i.normalUV);
-                    // normalmap
-                    half3 N = normalize(i.normalWS);
+                    half4 specularMap = SAMPLE_TEXTURE2D(_SpecularMap, sampler_SpecularMap, i.uv0);
+
+                    // ② 解码 RG 法线 + B 明暗偏置（调用 ZZZ_User.hlsl，支持 Cull Off 双面翻转）
+                    float faceSign = IS_FRONT_VFACE(cullFace, 1.0, -1.0);
+                    float3 geoN = SafeNormalize(i.normalWS) * faceSign;
+                    float3 packed = float3(0.5, 0.5, 0.5);
+                    float3 N = geoN;
                     #if defined(_USE_NORMAL_MAP)
-                        half3 normalTS = UnpackNormalScale(normalMap, _NormalMapIntensity);
-                        float3x3 TBN = float3x3(i.tangentWS, i.bitangentWS, i.normalWS);
-                        N = normalize(mul(normalTS, TBN));
+                        if (_NormalMapIntensity > 0.0 || _BlueBiasStrength > 0.0)
+                            packed = SAMPLE_TEXTURE2D(_NormalMap, sampler_NormalMap, i.normalAndRampUV.xy).rgb;
+                        N = DecodePackedNormalWS(i.normalWS, i.tangentWS, packed.rg, _NormalMapIntensity, faceSign);
                     #endif
-                    
-                    half3 L = normalize(light.direction);
-                    half NdotL = saturate(dot(N, L));
-                    half halfLambert = saturate(NdotL * 0.5 + 0.5); //半lambert
-                    halfLambert = pow(halfLambert,_LightContrast); //增加效果
 
-                    // AO 强度调节：1 = 无AO效果，ao值越小遮蔽越强
-                    half ao = SAMPLE_TEXTURE2D(_AOMap,sampler_AOMap,i.uv0);
+                    // ③ 计算 1 维受光色阶坐标 x = N·L + (B*2 - 1) * _BlueBiasStrength
+                    float x = dot(N, L) + (packed.b * 2.0 - 1.0) * _BlueBiasStrength;
+
+                    float clothMask = 0.0;
+                    #if defined(_USE_MATERIAL_REGIONS)
+                        // 线性 ID 贴图的红蓝混色是边缘覆盖率。滤波只在边界混合两套参数。
+                        half3 regionID = SAMPLE_TEXTURE2D(_RampID, sampler_RampID, i.normalAndRampUV.zw).rgb;
+                        half skinCoverage = min(regionID.r - 2.0h * regionID.g, 1.0h - regionID.b);
+                        clothMask = 1.0h - smoothstep(0.15h, 0.85h, skinCoverage);
+                    #endif
+
+                    // ④ 可选接收实时投影：按当前分区的光照参数限制 x。
+                    float castShadowStrength = lerp(_CastShadowStrength, _ClothCastShadowStrength, clothMask);
+                    float castShadowLimit = lerp(_CastShadowLimit, _ClothCastShadowLimit, clothMask);
+                    x = ApplyCastShadowToCoord(x, light.shadowAttenuation, castShadowStrength, castShadowLimit);
+
+                    // ⑤ 用 6 条 (Center, Width) 分界顺序混合 7 段色阶颜色（调用 ZZZ_User.hlsl）
+                    float3 palette = EvaluateMultiBandPalette(
+                        x,
+                        lerp(_DeepColor.rgb, _ClothDeepColor.rgb, clothMask),
+                        lerp(_ShadowColor.rgb, _ClothShadowColor.rgb, clothMask),
+                        lerp(_SoftShadowColor.rgb, _ClothSoftShadowColor.rgb, clothMask),
+                        lerp(_MidColor.rgb, _ClothMidColor.rgb, clothMask),
+                        lerp(_WarmColor.rgb, _ClothWarmColor.rgb, clothMask),
+                        lerp(_LightColor.rgb, _ClothLightColor.rgb, clothMask),
+                        lerp(_BrightColor.rgb, _ClothBrightColor.rgb, clothMask),
+                        lerp(_Center1, _ClothCenter1, clothMask), lerp(_Width1, _ClothWidth1, clothMask),
+                        lerp(_Center2, _ClothCenter2, clothMask), lerp(_Width2, _ClothWidth2, clothMask),
+                        lerp(_Center3, _ClothCenter3, clothMask), lerp(_Width3, _ClothWidth3, clothMask),
+                        lerp(_Center4, _ClothCenter4, clothMask), lerp(_Width4, _ClothWidth4, clothMask),
+                        lerp(_Center5, _ClothCenter5, clothMask), lerp(_Width5, _ClothWidth5, clothMask),
+                        lerp(_Center6, _ClothCenter6, clothMask), lerp(_Width6, _ClothWidth6, clothMask)
+                    );
+
+                    // 可选 AO 仅调制环境光
+                    half ao = SAMPLE_TEXTURE2D(_AOMap, sampler_AOMap, i.uv0).r;
                     ao = lerp(1.0, ao, _AOIntensity * _UseAOMap);
-                    half ambient = halfLambert * ao;
-                    half shadow = (ambient+halfLambert)*0.5;
-                    shadow = lerp(shadow,0,step(shadow,0.05));
-                    shadow = lerp(shadow,1,step(0.95,shadow));
-
-                    // Ramp色阶阴影
-                    half rampU = smoothstep(_ShadowThreshold - _ShadowSoftness,_ShadowThreshold + _ShadowSoftness,halfLambert);
-                    half3 RampID = SAMPLE_TEXTURE2D(_RampID,sampler_RampID,i.uv0);
-                    half2 rampUV = half2(rampU,GetrampV(RampID));
-                    half3 rampColor = SAMPLE_TEXTURE2D(_RampMap,sampler_RampMap,rampUV).rgb;
 
                     // Rim边缘光
                     float3 positionVS = i.positionVS;
@@ -352,44 +457,51 @@ Shader "ZZZ/ZZZ_body"
 
                     // 8. 菲涅尔遮罩：剔除内部杂乱的边缘光
                     float3 viewDirectionWS = SafeNormalize(GetCameraPositionWS() - i.positionWS);
-                    float rimRatio = 1.0 - saturate(dot(viewDirectionWS, i.normalWS));
+                    float rimRatio = 1.0 - saturate(dot(viewDirectionWS, geoN));
                     // 调整菲涅尔柔和度
                     rimRatio = pow(rimRatio, exp2(lerp(4.0, 0.0, _FresnelMask)));
                     // 应用遮罩
                     rimIntensity = lerp(0.0, rimIntensity, rimRatio);
 
-
-                    // 最终颜色
-                    half3 duffuse = basecolor.rgb * light.color * shadow;
-                    half3 color = duffuse;
+                    // ⑥ 颜色合成：主光乘 7 段配色 + SH 环境光，再乘底色
+                    float directStrength = lerp(_DirectStrength, _ClothDirectStrength, clothMask);
+                    float ambientStrength = lerp(_AmbientStrength, _ClothAmbientStrength, clothMask);
+                    half3 direct  = palette * light.color * light.distanceAttenuation * directStrength;
+                    half3 ambient = max(0.0, SampleSH(N)) * ambientStrength * ao;
+                    half3 color   = basecolor.rgb * (direct + ambient);
 
                     // 叠加边缘光
                     color.rgb += _RimColor.rgb * rimIntensity * _RimIntensity;
 
-                    #if defined(_USE_RAMPMAP)
-                        // Ramp色阶阴影：用 ramp 贴图对颜色做阴影调色
-                        color = lerp(color, color * rampColor, _ShadowIntensity);
-                    #endif
-
                     // 高光（smoothstep 软化边界，替代硬 if；_SpecularSoftness 越大边缘越虚）
                     half specThreshold = 1.0 - _SpecularRegion;
-                    half specWeight = smoothstep(specThreshold - _SpecularSoftness, specThreshold + _SpecularSoftness, halfLambert);
-                    half3 specInner = lerp(color.rgb, color.rgb + specularMap.a, halfLambert);
+                    half specWeight = smoothstep(specThreshold - _SpecularSoftness, specThreshold + _SpecularSoftness, x);
+                    half3 specInner = lerp(color.rgb, color.rgb + specularMap.a, saturate(x));
                     color.rgb = lerp(color.rgb, specInner, specWeight * _SpecularPower);
 
                     // ===== 调试可视化（_DebugMode 下拉，0=正常渲染）=====
-                    // 噪声预览与描边 Pass 同一采样坐标（模型空间 XY 投影），所见即所得
                     if (_DebugMode == 1) // 顶点色
-                        return half4(vertexcolor.ggg, 1.0);
+                        return half4(vertexcolor.rgb, 1.0);
                     if (_DebugMode == 2) // 观察空间法线
                         return half4(abs(normalVS), 1);
                     if (_DebugMode == 3) // uv1 中烘焙的平滑法线
                         return half4(i.uv1, 1);
                     if (_DebugMode == 4) // Perlin 噪声预览
-                    {   
+                    {
                         float2 nuv = i.positionOS.xy * _NoiseTillOffset.xy + _NoiseTillOffset.zw + _Time.y * _OutlineNoiseAnimSpeed;
                         float n = applyNoiseContrast(perlinNoise2D(nuv), _NoiseContrast) * 0.5 + 0.5;
                         return half4(n, n, n, 1);
+                    }
+                    if (_DebugMode == 5) // 顶点色 Alpha
+                        return half4(vertexcolor.aaa, 1.0);
+                    if (_DebugMode == 6) // 基础贴图 Alpha
+                        return half4(basecolor.aaa, 1.0);
+                    if (_DebugMode == 7) // 7 段色阶配色预览（对应 MultiBandNormalShadow 的 Palette）
+                        return half4(palette, 1.0);
+                    if (_DebugMode == 8) // 色阶坐标 x 灰度预览（-1~1 映射到 0~1）
+                    {
+                        half gray = saturate(x * 0.5 + 0.5);
+                        return half4(gray, gray, gray, 1.0);
                     }
 
                     return half4(color, basecolor.a);
@@ -398,7 +510,7 @@ Shader "ZZZ/ZZZ_body"
             ENDHLSL
         }
 
-        pass
+        pass //描边
         {
             Name "Outline"
 
@@ -445,7 +557,8 @@ Shader "ZZZ/ZZZ_body"
                         float n = applyNoiseContrast(perlinNoise2D(noiseCoord), _NoiseContrast);
                         noiseFactor = 1.0 + n * _OutlineNoiseStrength;
                     #endif
-                    float outlineWidth = _OutlineWidth * noiseFactor;
+                    float4 vertexcolor = v.color;
+                    float outlineWidth = _OutlineWidth * noiseFactor * vertexcolor.r;
 
                     // 3. 沿视图空间法线膨胀（背面法）：
                     //    - 乘 viewDepth 抵消透视投影的 1/z 缩放，使屏幕空间描边宽度近似一致（不受距离影响）
@@ -476,6 +589,101 @@ Shader "ZZZ/ZZZ_body"
                     return half4(_OutlineColor.rgb, 1.0);
                 }
 
+            ENDHLSL
+        }
+
+        Pass
+        {
+            Name "ShadowCaster"
+            Tags { "LightMode" = "ShadowCaster" }
+
+            ZWrite On
+            ZTest LEqual
+            ColorMask 0
+            Cull Off
+
+            HLSLPROGRAM
+                #pragma vertex ShadowPassVertex
+                #pragma fragment ShadowPassFragment
+                #pragma multi_compile_vertex _ _CASTING_PUNCTUAL_LIGHT_SHADOW
+
+                float3 _LightDirection;
+                float3 _LightPosition;
+
+                struct ShadowVaryings
+                {
+                    float4 positionCS : SV_POSITION;
+                    float2 uv0        : TEXCOORD0;
+                };
+
+                ShadowVaryings ShadowPassVertex(Attributes input)
+                {
+                    ShadowVaryings output;
+                    float3 worldPos    = TransformObjectToWorld(input.positionOS.xyz);
+                    float3 worldNormal = TransformObjectToWorldNormal(input.normalOS);
+                    #if defined(_CASTING_PUNCTUAL_LIGHT_SHADOW)
+                        float3 lightDir = SafeNormalize(_LightPosition - worldPos);
+                    #else
+                        float3 lightDir = _LightDirection;
+                    #endif
+                    output.positionCS = TransformWorldToHClip(ApplyShadowBias(worldPos, worldNormal, lightDir));
+                    #if UNITY_REVERSED_Z
+                        output.positionCS.z = min(output.positionCS.z, UNITY_NEAR_CLIP_VALUE);
+                    #else
+                        output.positionCS.z = max(output.positionCS.z, UNITY_NEAR_CLIP_VALUE);
+                    #endif
+                    output.uv0 = TRANSFORM_TEX(input.uv0, _BaseMap);
+                    return output;
+                }
+
+                half4 ShadowPassFragment(ShadowVaryings input) : SV_TARGET
+                {
+                    if (_AlphaClip > 0.5)
+                    {
+                        half alpha = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.uv0).a * _MixColor.a * _Opacity;
+                        clip(alpha - _Cutoff);
+                    }
+                    return 0;
+                }
+            ENDHLSL
+        }
+
+        Pass
+        {
+            Name "DepthOnly"
+            Tags { "LightMode" = "DepthOnly" }
+
+            ZWrite On
+            ColorMask R
+            Cull Off
+
+            HLSLPROGRAM
+                #pragma vertex DepthOnlyVertex
+                #pragma fragment DepthOnlyFragment
+
+                struct DepthVaryings
+                {
+                    float4 positionCS : SV_POSITION;
+                    float2 uv0        : TEXCOORD0;
+                };
+
+                DepthVaryings DepthOnlyVertex(Attributes input)
+                {
+                    DepthVaryings output;
+                    output.positionCS = TransformObjectToHClip(input.positionOS.xyz);
+                    output.uv0 = TRANSFORM_TEX(input.uv0, _BaseMap);
+                    return output;
+                }
+
+                half DepthOnlyFragment(DepthVaryings input) : SV_TARGET
+                {
+                    if (_AlphaClip > 0.5)
+                    {
+                        half alpha = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.uv0).a * _MixColor.a * _Opacity;
+                        clip(alpha - _Cutoff);
+                    }
+                    return input.positionCS.z;
+                }
             ENDHLSL
         }
     }

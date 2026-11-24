@@ -24,19 +24,49 @@ Shader "ZZZ/ZZZ_face"
         [Header(SDF)]
         [Toggle(_USE_SDF)] _UseSDF("Use SDF", Range(0,1)) = 0 //sdf开关
         _SDFMap("SDF Map", 2D) = "white"{}
+        _SDFWidth("SDF阴影过渡宽度", Range(0.01,0.25)) = 0.05
+        _SDFWidthScale("SDF阴影过渡宽度倍率", Range(0.1,3)) = 1
 
-        _Yuzhi("t",range(0,1)) = 0.5
-
-        _FaceLightColor("Face Light Color", color) = (0.1,0.1,0.1,0.1)
-        _FaceDarkColor("Face Dark Color", color) = (1,1,1,1)
-
+        [Space(10)]
         _FaceForwardOS("Forward Direction", vector) = (0,0,1,0)
         _FaceRightOS("Right Direction", vector) = (1,0,0,0)
         _FaceUpOS("Up Direction", vector) = (0,1,0,0)
+        [Space(20)]
 
+        [Header(Band Colors)]
+        _DeepColor("1 Deep Shadow", Color) = (0.62, 0.48, 0.50, 1)
+        _ShadowColor("2 Shadow", Color) = (0.72, 0.58, 0.59, 1)
+        _SoftShadowColor("3 Soft Shadow", Color) = (0.82, 0.69, 0.68, 1)
+        _MidColor("4 Midtone", Color) = (0.90, 0.79, 0.76, 1)
+        _WarmColor("5 Warm Transition", Color) = (1.00, 0.80, 0.72, 1)
+        _LightColor("6 Light", Color) = (0.99, 0.96, 0.94, 1)
+        _BrightColor("7 Bright Light", Color) = (1, 1, 1, 1)
+        [Space(10)]
+
+        [Header(Transition Centers and Full Widths)]
+        _Center1("1 to 2 Center", Range(-1, 1)) = -0.72
+        _Width1("1 to 2 Width", Range(0, 1)) = 0.30
+        _Center2("2 to 3 Center", Range(-1, 1)) = -0.36
+        _Width2("2 to 3 Width", Range(0, 1)) = 0.06
+        _Center3("3 to 4 Center", Range(-1, 1)) = -0.04
+        _Width3("3 to 4 Width", Range(0, 1)) = 0.28
+        _Center4("4 to 5 Center", Range(-1, 1)) = 0.26
+        _Width4("4 to 5 Width", Range(0, 1)) = 0.09
+        _Center5("5 to 6 Center", Range(-1, 1)) = 0.45
+        _Width5("5 to 6 Width", Range(0, 1)) = 0.06
+        _Center6("6 to 7 Center", Range(-1, 1)) = 0.76
+        _Width6("6 to 7 Width", Range(0, 1)) = 0.32
+        [Space(10)]
+
+        [Header(Lighting)]
+        _DirectStrength("Main Light Strength", Range(0, 2)) = 1.0
+        _AmbientStrength("Ambient Strength", Range(0, 1)) = 0.15
+        _CastShadowStrength("Cast Shadow Influence", Range(0, 1)) = 0.0
+        _CastShadowLimit("Occluded Lighting Coordinate", Range(-1, 1)) = -0.36
+        [Space(20)]
 
         [Header(Debug)]
-        [Enum(Off,0,Vertex Color,1,View Normal,2,Smooth Normal,3,Noise,4)] _DebugMode("Debug Mode", Float) = 0 //调试可视化下拉：0=正常渲染，1=顶点色，2=观察空间法线，3=平滑法线(uv1)，4=柏林噪声预览
+        [Enum(Off,0,Vertex Color,1,View Normal,2,Smooth Normal,3,Noise,4,Palette,5,LightingCoordinate,6,FaceAO Mask,7)] _DebugMode("Debug Mode", Float) = 0 //调试可视化下拉：0=正常渲染，1=顶点色，2=观察空间法线，3=平滑法线(uv1)，4=柏林噪声预览，5=7段色阶配色，6=色阶坐标x灰度，7=FaceAO(SDF与法线混合遮罩)
     }
     SubShader
     {
@@ -49,6 +79,8 @@ Shader "ZZZ/ZZZ_face"
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl" // 核心库
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl" // 光照库
+
+            #include "ZZZ_User.hlsl"
 
             #pragma shader_feature_local _USE_OUTLINE_NOISE
             #pragma shader_feature_local _USE_SDF
@@ -68,18 +100,36 @@ Shader "ZZZ/ZZZ_face"
                 float _OutlineZOffset;
 
                 // 描边噪声
+                half _UseOutlineNoise;
                 float4 _NoiseTillOffset;
                 half _OutlineNoiseStrength;
                 half _OutlineNoiseAnimSpeed;
                 half _NoiseContrast;
 
-                // 
-                float _Yuzhi;
-                float3 _FaceLightColor;
-                float3 _FaceDarkColor;
+                // SDF
+                half _UseSDF;
+                half _SDFWidth;
+                half _SDFWidthScale;
                 float4 _FaceForwardOS;
                 float4 _FaceRightOS;
                 float4 _FaceUpOS;
+
+                // 7 段色阶颜色与 6 条交界 (MultiBandNormalShadow)
+                float4 _DeepColor;
+                float4 _ShadowColor;
+                float4 _SoftShadowColor;
+                float4 _MidColor;
+                float4 _WarmColor;
+                float4 _LightColor;
+                float4 _BrightColor;
+
+                float _Center1, _Center2, _Center3, _Center4, _Center5, _Center6;
+                float _Width1, _Width2, _Width3, _Width4, _Width5, _Width6;
+
+                float _DirectStrength;
+                float _AmbientStrength;
+                float _CastShadowStrength;
+                float _CastShadowLimit;
 
                 // 调试
                 half _DebugMode;
@@ -114,7 +164,7 @@ Shader "ZZZ/ZZZ_face"
                 return sign(n) * pow(abs(n), 1.0 / c);
             }
 
-            float CalculateSignedFaceAngle(float lightRight, float lightForward)
+            float CalculateSignedFaceAngle(float lightRight, float lightForward) //atan2函数
             {
                 float shorter = min(abs(lightRight), abs(lightForward));
                 float longer = max(abs(lightRight), abs(lightForward));
@@ -139,13 +189,13 @@ Shader "ZZZ/ZZZ_face"
                 return angle;
             }
             
-            float CalculateFaceLightAngle()
+            float CalculateFaceLightAngle(float3 lightDirWS)
             {
                 float3 faceForwardWS = normalize(TransformObjectToWorldDir(_FaceForwardOS.xyz));
                 float3 faceRightWS = normalize(TransformObjectToWorldDir(_FaceRightOS.xyz));
                 float3 faceUpWS = normalize(TransformObjectToWorldDir(_FaceUpOS.xyz));
 
-                float3 sdfuselight = normalize(GetMainLight().direction);
+                float3 sdfuselight = normalize(lightDirWS);
 
                 float axisBias = abs(dot(sdfuselight,faceUpWS) * 0.5); // 轴向偏置，0.5是系数
                 sdfuselight.xz += faceForwardWS.xz * axisBias;
@@ -156,8 +206,8 @@ Shader "ZZZ/ZZZ_face"
                 sdfuselight = normalize(sdfuselight);
 
                 // 获得投影
-                float3 lightForward = dot(sdfuselight,faceForwardWS);
-                float3 lightRight = -dot(sdfuselight,faceRightWS);
+                float lightForward = dot(sdfuselight,faceForwardWS);
+                float lightRight = -dot(sdfuselight,faceRightWS);
                 
                 float angleRadians = CalculateSignedFaceAngle(lightRight,lightForward); //得到-PI到PI
 
@@ -180,6 +230,8 @@ Shader "ZZZ/ZZZ_face"
 
                 #pragma vertex vert
                 #pragma fragment frag
+                #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE _MAIN_LIGHT_SHADOWS_SCREEN
+                #pragma multi_compile_fragment _ _SHADOWS_SOFT
 
                 struct Attributes
                 {
@@ -197,6 +249,7 @@ Shader "ZZZ/ZZZ_face"
                     float3 positionOS : TEXCOORD1;   // 模型空间坐标（噪声调试预览用，与描边 Pass 同源）
                     float3 normalWS   : TEXCOORD2;   // 世界空间法线
                     float3 uv1        : TEXCOORD3;   // 平滑法线（调试预览用）
+                    float3 positionWS : TEXCOORD4;   // 世界空间坐标（实时阴影与距离去饱和用）
                     float4 color      : COLOR;       // 顶点颜色
                 };
 
@@ -204,8 +257,10 @@ Shader "ZZZ/ZZZ_face"
                 {
                     Varyings o;
 
-                    // 模型空间 -> 裁剪空间
-                    o.positionCS = TransformObjectToHClip(i.positionOS.xyz);
+                    // 模型空间 -> 裁剪空间 / 世界空间
+                    VertexPositionInputs posInputs = GetVertexPositionInputs(i.positionOS.xyz);
+                    o.positionCS = posInputs.positionCS;
+                    o.positionWS = posInputs.positionWS;
 
                     // UV 传递（应用 Tiling/Offset）
                     o.uv0 = TRANSFORM_TEX(i.uv0, _BaseMap);
@@ -224,51 +279,77 @@ Shader "ZZZ/ZZZ_face"
 
                 half4 frag(Varyings i) : SV_TARGET
                 {
-                    // 采样光源
-                    Light light = GetMainLight();
+                    // ① 采样 URP 主光（含实时投影，兼容 Cascade / Screen Space Shadows）
+                    VertexPositionInputs posInputs = (VertexPositionInputs)0;
+                    posInputs.positionWS = i.positionWS;
+                    posInputs.positionCS = TransformWorldToHClip(i.positionWS);
+                    Light light = GetMainLight(GetShadowCoord(posInputs));
+                    float3 L = normalize(light.direction);
 
-                    // 采样纹理
+                    // 采样底色与法线
                     half4 basecolor = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, i.uv0);
+                    float3 N = SafeNormalize(i.normalWS);
 
-                    half3 N = normalize(i.normalWS);
-                    half3 L = normalize(light.direction);
+                    // ② 计算 1 维受光色阶坐标 x：默认由 3D 法线 dot(N, L) 决定
+                    float xNormal = dot(N, L);
+                    float x = xNormal;
+                    float faceAO = 0.0;
 
-                    // ===== 漫反射（Half-Lambert）=====
-                    half NdotL = saturate(dot(N, L));
-                    half halfLambert = saturate(NdotL * 0.5 + 0.5);
-                    halfLambert = halfLambert * halfLambert * halfLambert;
-
-                    // ===== SDF（面部阴影遮罩）=====
-                    // 默认白色 = 不改变光照；关键字 _USE_SDF 关闭时整块被剔除
+                    // 开启 SDF 时，将 SDF 亮暗映射到 [-1, 1]，再按 A 通道 (FaceAO) 与法线坐标融合：
+                    // 脸颊/额头平展区 (FaceAO=1) 走 SDF，耳廓/下颌/颈部立体区 (FaceAO=0) 走 3D 法线
                     #if defined(_USE_SDF)
-                        half3 sdfcolor = _FaceLightColor;
+                        float angle = CalculateFaceLightAngle(L);
+                        float2 mirroredUV = float2((angle > 0.0) ? (1.0 - i.uv0.x) : i.uv0.x, i.uv0.y);
+                        float absAngle = abs(angle);
 
-                        float threshold = CalculateFaceLightAngle(); 
-                        float2 mirroredUV = float2((step(threshold,0) ? i.uv0.x : 1-i.uv0.x), i.uv0.y);
-                        threshold = abs(threshold);
+                        float4 mirroredsdfmap = SAMPLE_TEXTURE2D(_SDFMap, sampler_SDFMap, mirroredUV);
+                        float4 originalsdfmap = SAMPLE_TEXTURE2D(_SDFMap, sampler_SDFMap, i.uv0);
 
-                        half sdfValue = SAMPLE_TEXTURE2D(_SDFMap, sampler_SDFMap, mirroredUV).r;
-                        half sdfMask = step(sdfValue,threshold);
+                        float sdfR = mirroredsdfmap.r;
+                        bool isValidG = (mirroredsdfmap.g > 0.4 && mirroredsdfmap.g < 0.95);
+                        float sdfG = isValidG ? mirroredsdfmap.g : originalsdfmap.g;
+                        faceAO = mirroredsdfmap.a;
 
-                        sdfcolor = lerp(_FaceLightColor, _FaceDarkColor, sdfMask);
+                        // G 通道控制局部软硬（鼻梁等硬边走 _SDFWidth，脸颊软边向 0.25 过渡）
+                        float softnessFactor = saturate((sdfG - 0.5) * 2.5);
+                        float width = max(1e-4, lerp(_SDFWidth, 0.25, softnessFactor) * _SDFWidthScale);
+                        float sdfLit = saturate((sdfR - absAngle) / width);
+                        float xSDF = sdfLit * 2.0 - 1.0;
 
-                        half4 color = half4(basecolor.rgb * light.color  * sdfcolor, basecolor.a);                    
-                    #else
-                        // ===== 最终颜色 = 漫反射 + 高光贴图 =====
-                        half4 color = half4(basecolor.rgb * light.color * halfLambert, basecolor.a);
+                        x = lerp(xNormal, xSDF, faceAO);
                     #endif
+
+                    // ③ 可选接收实时投影：被遮挡时把 x 压向不超过 _CastShadowLimit
+                    x = ApplyCastShadowToCoord(x, light.shadowAttenuation, _CastShadowStrength, _CastShadowLimit);
+
+                    // ④ 用 6 条 (Center, Width) 分界顺序混合 7 段色阶颜色（调用 ZZZ_User.hlsl）
+                    float3 palette = EvaluateMultiBandPalette(
+                        x,
+                        _DeepColor.rgb, _ShadowColor.rgb, _SoftShadowColor.rgb,
+                        _MidColor.rgb, _WarmColor.rgb, _LightColor.rgb, _BrightColor.rgb,
+                        _Center1, _Width1,
+                        _Center2, _Width2,
+                        _Center3, _Width3,
+                        _Center4, _Width4,
+                        _Center5, _Width5,
+                        _Center6, _Width6
+                    );
+
+                    // ⑤ 颜色合成：主光乘 7 段配色 + SH 环境光，再乘底色
+                    half3 direct  = palette * light.color * light.distanceAttenuation * _DirectStrength;
+                    half3 ambient = max(0.0, SampleSH(N)) * _AmbientStrength;
+                    half4 color   = half4(basecolor.rgb * (direct + ambient), basecolor.a);
 
                     // 采样顶点色
                     half3 vertexcolor = i.color.rgb;
 
                     // ===== 调试可视化（_DebugMode 下拉，0=正常渲染）=====
-                    // 噪声预览与描边 Pass 同一采样坐标（模型空间 XY 投影），所见即所得
                     if (_DebugMode == 1) // 顶点色
-                        return half4(vertexcolor.ggg, 1.0);
+                        return half4(vertexcolor, 1.0);
                     if (_DebugMode == 2) // 观察空间法线
                     {
                         half3 normalVS = TransformWorldToViewDir(i.normalWS, true);
-                        return half4(abs(i.normalWS), 1);
+                        return half4(abs(normalVS), 1);
                     }
                     if (_DebugMode == 3) // uv1 中烘焙的平滑法线
                         return half4(i.uv1, 1);
@@ -278,6 +359,15 @@ Shader "ZZZ/ZZZ_face"
                         float n = applyNoiseContrast(perlinNoise2D(nuv), _NoiseContrast) * 0.5 + 0.5;
                         return half4(n, n, n, 1);
                     }
+                    if (_DebugMode == 5) // 7 段色阶配色预览（对应 MultiBandNormalShadow 的 Palette）
+                        return half4(palette, 1.0);
+                    if (_DebugMode == 6) // 色阶坐标 x 灰度预览（-1~1 映射到 0~1）
+                    {
+                        half gray = saturate(x * 0.5 + 0.5);
+                        return half4(gray, gray, gray, 1.0);
+                    }
+                    if (_DebugMode == 7) // FaceAO 融合遮罩预览（白=SDF，黑=3D 法线）
+                        return half4(faceAO, faceAO, faceAO, 1.0);
 
                     return color;
                 }
@@ -367,6 +457,98 @@ Shader "ZZZ/ZZZ_face"
                     return half4(_OutlineColor.rgb, 1.0);
                 }
 
+            ENDHLSL
+        }
+
+        Pass
+        {
+            Name "ShadowCaster"
+            Tags { "LightMode" = "ShadowCaster" }
+
+            ZWrite On
+            ZTest LEqual
+            ColorMask 0
+            Cull Back
+
+            HLSLPROGRAM
+                #pragma vertex ShadowPassVertex
+                #pragma fragment ShadowPassFragment
+                #pragma multi_compile_vertex _ _CASTING_PUNCTUAL_LIGHT_SHADOW
+
+                float3 _LightDirection;
+                float3 _LightPosition;
+
+                struct ShadowAttributes
+                {
+                    float4 positionOS : POSITION;
+                    float3 normalOS   : NORMAL;
+                };
+
+                struct ShadowVaryings
+                {
+                    float4 positionCS : SV_POSITION;
+                };
+
+                ShadowVaryings ShadowPassVertex(ShadowAttributes input)
+                {
+                    ShadowVaryings output;
+                    float3 worldPos    = TransformObjectToWorld(input.positionOS.xyz);
+                    float3 worldNormal = TransformObjectToWorldNormal(input.normalOS);
+                    #if defined(_CASTING_PUNCTUAL_LIGHT_SHADOW)
+                        float3 lightDir = SafeNormalize(_LightPosition - worldPos);
+                    #else
+                        float3 lightDir = _LightDirection;
+                    #endif
+                    output.positionCS = TransformWorldToHClip(ApplyShadowBias(worldPos, worldNormal, lightDir));
+                    #if UNITY_REVERSED_Z
+                        output.positionCS.z = min(output.positionCS.z, UNITY_NEAR_CLIP_VALUE);
+                    #else
+                        output.positionCS.z = max(output.positionCS.z, UNITY_NEAR_CLIP_VALUE);
+                    #endif
+                    return output;
+                }
+
+                half4 ShadowPassFragment(ShadowVaryings input) : SV_TARGET
+                {
+                    return 0;
+                }
+            ENDHLSL
+        }
+
+        Pass
+        {
+            Name "DepthOnly"
+            Tags { "LightMode" = "DepthOnly" }
+
+            ZWrite On
+            ColorMask R
+            Cull Back
+
+            HLSLPROGRAM
+                #pragma vertex DepthOnlyVertex
+                #pragma fragment DepthOnlyFragment
+
+                struct DepthAttributes
+                {
+                    float4 positionOS : POSITION;
+                };
+
+                struct DepthVaryings
+                {
+                    float4 positionCS : SV_POSITION;
+                };
+
+                DepthVaryings DepthOnlyVertex(DepthAttributes input)
+                {
+                    DepthVaryings output;
+                    output.positionCS = TransformObjectToHClip(input.positionOS.xyz);
+                    return output;
+                }
+
+                half DepthOnlyFragment(DepthVaryings input) : SV_TARGET
+                {
+                    return input.positionCS.z;
+                }
             ENDHLSL
         }
     }

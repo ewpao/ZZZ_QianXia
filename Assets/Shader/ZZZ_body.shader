@@ -131,8 +131,12 @@ Shader "ZZZ/ZZZ_body"
         _NoiseContrast("Noise Contrast", Range(0.5, 4)) = 1.0 //噪声对比度（>1 拉开黑白差距，<1 变柔和）
         [Space(30)]
 
+        [Header(Stencil)]
+        _StencilRef("Stencil Ref (32=Bangs)", Range(0,255)) = 0
+        _StencilWhiteMask("Stencil White Mask (32=Bangs)", Range(0,255)) = 32
+
         [Header(Debug)]
-        [Enum(Off,0,Vertex Color,1,View Normal,2,Smooth Normal,3,Noise,4,Vertex Alpha,5,Base Map Alpha,6,Palette,7,LightingCoordinate,8)] _DebugMode("Debug Mode", Float) = 0 //调试可视化下拉：0=正常渲染，1=顶点色，2=观察空间法线，3=平滑法线(uv1)，4=柏林噪声预览，5=顶点色Alpha，6=基础贴图Alpha，7=7段色阶配色，8=色阶坐标x灰度
+        [Enum(ZZZ.BodyDebugMode)] _DebugMode("Debug Mode", Float) = 0 //调试可视化下拉：0=正常渲染，1=顶点色，2=观察空间法线，3=平滑法线(uv1)，4=柏林噪声预览，5=顶点色Alpha，6=基础贴图Alpha，7=7段色阶配色，8=色阶坐标x灰度
     }
     SubShader
     {
@@ -322,6 +326,15 @@ Shader "ZZZ/ZZZ_body"
             Cull off //背面剔除关闭
             Blend [_SrcBlend] [_DstBlend]
             ZWrite [_ZWrite]
+
+            Stencil
+            {
+                Ref [_StencilRef]
+                ReadMask 255
+                WriteMask [_StencilWhiteMask]
+                Comp Always
+                Pass Replace
+            }
 
             HLSLPROGRAM
 

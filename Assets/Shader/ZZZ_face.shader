@@ -65,8 +65,15 @@ Shader "ZZZ/ZZZ_face"
         _CastShadowLimit("Occluded Lighting Coordinate", Range(-1, 1)) = -0.36
         [Space(20)]
 
+        [Header(Through Hair Stencil)]
+        _FaceStencilRef("Face Stencil Ref (16=Brow/Lash)", Range(0, 255)) = 0
+        _FaceStencilWriteMask("Face Stencil Write Mask", Range(0, 255)) = 16
+        _BrowThroughAlpha("Brow Through Hair Alpha", Range(0, 1)) = 0.0
+        _LashThroughAlpha("Lash Through Hair Alpha", Range(0, 1)) = 0.0
+        _ThroughHairTint("Through Hair Tint", Color) = (1, 1, 1, 1)
+
         [Header(Debug)]
-        [Enum(Off,0,Vertex Color,1,View Normal,2,Smooth Normal,3,Noise,4,Palette,5,LightingCoordinate,6,FaceAO Mask,7)] _DebugMode("Debug Mode", Float) = 0 //调试可视化下拉：0=正常渲染，1=顶点色，2=观察空间法线，3=平滑法线(uv1)，4=柏林噪声预览，5=7段色阶配色，6=色阶坐标x灰度，7=FaceAO(SDF与法线混合遮罩)
+        [Enum(ZZZ.FaceDebugMode)] _DebugMode("Debug Mode", Float) = 0 //调试可视化下拉：0=正常渲染，1=顶点色，2=观察空间法线，3=平滑法线(uv1)，4=柏林噪声预览，5=7段色阶配色，6=色阶坐标x灰度，7=FaceAO(SDF与法线混合遮罩)
     }
     SubShader
     {
@@ -130,6 +137,11 @@ Shader "ZZZ/ZZZ_face"
                 float _AmbientStrength;
                 float _CastShadowStrength;
                 float _CastShadowLimit;
+
+                // ThoughHair
+                half _BrowThroughAlpha;
+                half _LashThroughAlpha;
+                half4 _ThroughHairTint;
 
                 // 调试
                 half _DebugMode;
@@ -224,6 +236,15 @@ Shader "ZZZ/ZZZ_face"
             Tags
             {
                 "LightMode" = "UniversalForward"
+            }
+
+            Stencil
+            {
+                Ref [_FaceStencilRef]
+                ReadMask 255
+                WriteMask [_FaceStencilWriteMask]
+                Comp Always
+                Pass Replace
             }
 
             HLSLPROGRAM
@@ -375,7 +396,7 @@ Shader "ZZZ/ZZZ_face"
             ENDHLSL
         }
 
-        pass
+        pass //描边
         {
             Name "Outline"
 
@@ -387,6 +408,14 @@ Shader "ZZZ/ZZZ_face"
             Cull Front  // 剔除正面，只渲染膨胀后的背面，形成轮廓
             ZWrite On
             ZTest LEqual
+
+            Stencil
+            {
+                Ref 16
+                ReadMask 16
+                WriteMask 0
+                Comp NotEqual
+            }
 
             HLSLPROGRAM
 
@@ -460,7 +489,7 @@ Shader "ZZZ/ZZZ_face"
             ENDHLSL
         }
 
-        Pass
+        Pass //阴影投射
         {
             Name "ShadowCaster"
             Tags { "LightMode" = "ShadowCaster" }
@@ -515,7 +544,7 @@ Shader "ZZZ/ZZZ_face"
             ENDHLSL
         }
 
-        Pass
+        Pass //Deepthonly
         {
             Name "DepthOnly"
             Tags { "LightMode" = "DepthOnly" }
@@ -548,6 +577,83 @@ Shader "ZZZ/ZZZ_face"
                 half DepthOnlyFragment(DepthVaryings input) : SV_TARGET
                 {
                     return input.positionCS.z;
+                }
+            ENDHLSL
+        }
+
+        Pass //ThoughHair
+        {
+            Name "ThroughHair"
+            Tags { "LightMode" = "ThroughHair" }
+
+            Cull Back
+            ZWrite Off
+            ZTest Greater                  // 核心1：只在「被挡住」的像素触发，露出的实体眉毛绝不重画
+            Blend SrcAlpha OneMinusSrcAlpha
+
+            Stencil
+            {
+              Ref 32
+              ReadMask 32
+              WriteMask 32
+
+              Comp Equal
+              pass Zero
+            }
+
+            HLSLPROGRAM
+                #pragma vertex vertThrough
+                #pragma fragment fragThrough
+
+                struct ThroughAttributes
+                {
+                    float4 positionOS : POSITION;
+                    float3 normalOS   : NORMAL;
+                    float2 uv0        : TEXCOORD0;
+                };
+
+                struct ThroughVaryings
+                {
+                    float4 positionCS : SV_POSITION;
+                    float2 uv0        : TEXCOORD0;
+                    float3 normalWS   : TEXCOORD1;
+                    float3 positionWS : TEXCOORD2; // 用于片元阶段计算视线方向
+                };
+
+                ThroughVaryings vertThrough(ThroughAttributes i)
+                {
+                    ThroughVaryings o;
+                    VertexPositionInputs posInputs = GetVertexPositionInputs(i.positionOS.xyz);
+                    o.positionCS = posInputs.positionCS;
+                    o.positionWS = posInputs.positionWS;
+                    o.uv0        = TRANSFORM_TEX(i.uv0, _BaseMap);
+                    o.normalWS   = TransformObjectToWorldNormal(i.normalOS);
+                    return o;
+                }
+
+                half4 fragThrough(ThroughVaryings i) : SV_TARGET
+                {
+                    //
+                    float3 faceForwardWS = SafeNormalize(TransformObjectToWorldDir(_FaceForwardOS.xyz));
+                    float3 viewDirWS     = SafeNormalize(GetCameraPositionWS() - i.positionWS);
+                    half frontFade = smoothstep(0.05,0.25,saturate(dot(faceForwardWS,viewDirWS)));
+                    
+                    // 按实测 UV 分家：右半边 (uv.x > 0.5) = 眉毛/双眼皮，左半边 = 上下睫毛
+                    half maskAlpha = ((i.uv0.x > 0.5) ? _BrowThroughAlpha : _LashThroughAlpha)* frontFade;
+
+                    // 必须 discard！否则脸部 (alpha=0) 也会触发 Stencil Pass Zero 提前把 Bit 5 擦掉
+                    if (maskAlpha <= 0.001) discard;
+
+                    half4 basecolor = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, i.uv0);
+                    Light light = GetMainLight();
+                    half3 N = SafeNormalize(i.normalWS);
+
+                    // 柔和吃主光色 + 环境光，避免暗处/彩光下透出的眉毛发死亮
+                    half3 lighting = light.color * light.distanceAttenuation * _DirectStrength
+                                + max(0.0, SampleSH(N)) * _AmbientStrength;
+                    half3 rgb = basecolor.rgb * _ThroughHairTint.rgb * lighting;
+
+                    return half4(rgb, saturate(basecolor.a * _ThroughHairTint.a * maskAlpha));
                 }
             ENDHLSL
         }

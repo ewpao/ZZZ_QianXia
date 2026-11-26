@@ -14,6 +14,14 @@ Shader "ZZZ/ZZZ_body"
         [HideInInspector] _Cutoff("Alpha Cutoff", Range(0,1)) = 0.33
         [Space(30)]
 
+        [Header(MatCap)]
+        [NoScaleOffset] _MatCapMap("MatCap Map", 2D) = "black" {} //MatCap 贴图（用视图空间法线采样的球面光照图）
+        _MatCapStrength("MatCap Strength", Range(0, 2)) = 1.0 //MatCap 叠加强度
+        [ToggleUI] _UseMatCapMask("Use MatCap Mask(A map B Channel)", Float) = 1
+        [NoScaleOffset] _MatCapMaskTex("MatCap Mask Tex", 2D) = "white"{}
+
+        [Space(30)]
+
         [Header(Material Regions)]
         [Toggle(_USE_MATERIAL_REGIONS)] _UseMaterialRegions("Enable Material Regions", Float) = 0
         [NoScaleOffset] _RampID("Region ID (Red Skin - Blue Cloth)", 2D) = "black" {}
@@ -160,6 +168,8 @@ Shader "ZZZ/ZZZ_body"
             TEXTURE2D(_AOMap);              SAMPLER(sampler_AOMap);
             TEXTURE2D(_SpecularMap);        SAMPLER(sampler_SpecularMap);
             TEXTURE2D(_NormalMap);          SAMPLER(sampler_NormalMap);
+            TEXTURE2D(_MatCapMap);          SAMPLER(sampler_MatCapMap);
+            TEXTURE2D(_MatCapMaskTex);      SAMPLER(sampler_MatCapMaskTex);
 
             // 材质属性常量缓冲区
             CBUFFER_START(UnityPerMaterial)
@@ -186,6 +196,10 @@ Shader "ZZZ/ZZZ_body"
                 half _UseNormalMap;
                 float _NormalMapIntensity;
                 float _BlueBiasStrength;
+
+                // MatCap
+                half _MatCapStrength;
+                half _UseMatCapMask;
 
                 // 7 段色阶颜色与 6 条交界 (MultiBandNormalShadow)
                 float4 _DeepColor;
@@ -476,12 +490,20 @@ Shader "ZZZ/ZZZ_body"
                     // 应用遮罩
                     rimIntensity = lerp(0.0, rimIntensity, rimRatio);
 
+                    // Matcap
+                    half2 matcapUV = saturate(mul((float3x3)UNITY_MATRIX_V, N)* 0.5 + 0.5);
+                    half4 matcapcolor = SAMPLE_TEXTURE2D(_MatCapMap, sampler_MatCapMap, matcapUV);
+                    half3 matcapmask = (_UseMatCapMask > 0.5) ? SAMPLE_TEXTURE2D(_MatCapMaskTex,sampler_MatCapMaskTex, i.uv0).b : 1.0;
+                    half matcapalpha = saturate(matcapcolor.a* matcapmask* _MatCapStrength);
+                    half3 albedo = lerp(basecolor,matcapcolor,matcapalpha);
+
+
                     // ⑥ 颜色合成：主光乘 7 段配色 + SH 环境光，再乘底色
                     float directStrength = lerp(_DirectStrength, _ClothDirectStrength, clothMask);
                     float ambientStrength = lerp(_AmbientStrength, _ClothAmbientStrength, clothMask);
                     half3 direct  = palette * light.color * light.distanceAttenuation * directStrength;
                     half3 ambient = max(0.0, SampleSH(N)) * ambientStrength * ao;
-                    half3 color   = basecolor.rgb * (direct + ambient);
+                    half3 color   = albedo.rgb * (direct + ambient);
 
                     // 叠加边缘光
                     color.rgb += _RimColor.rgb * rimIntensity * _RimIntensity;
@@ -605,7 +627,7 @@ Shader "ZZZ/ZZZ_body"
             ENDHLSL
         }
 
-        Pass
+        Pass //ShadowCaster
         {
             Name "ShadowCaster"
             Tags { "LightMode" = "ShadowCaster" }
@@ -661,7 +683,7 @@ Shader "ZZZ/ZZZ_body"
             ENDHLSL
         }
 
-        Pass
+        Pass //DepthOnly
         {
             Name "DepthOnly"
             Tags { "LightMode" = "DepthOnly" }
